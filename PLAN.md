@@ -20,6 +20,8 @@ A Rust desktop GUI for building custom Linux kernels via linux-tkg. Four main ta
 | Regex | `regex` |
 | Subprocess | `std::process::Command` + `std::sync::mpsc` |
 | Async coordination | `std::thread` + `std::sync::mpsc` channels |
+| Serialization | `serde` + `serde_json` |
+| Integrity hashing | `sha2` |
 
 **Why egui/eframe:** Immediate-mode rendering maps naturally onto streaming log output
 (just append to a `Vec` and repaint). No system dependencies — ships as a single static
@@ -34,6 +36,8 @@ communicates back via `mpsc` channels; the UI drains channels on every frame.
 tkg-gui/
 ├── Cargo.toml
 ├── Cargo.lock
+├── .tkg-gui/
+│   └── patch_registry.json    # auto-created; gitignored; tracks installed patch metadata
 ├── src/
 │   ├── main.rs                # eframe::run_native() entry point
 │   ├── app.rs                 # TkgApp struct + eframe::App impl
@@ -41,18 +45,24 @@ tkg-gui/
 │   │   ├── mod.rs
 │   │   ├── kernel.rs          # Kernel version browser tab
 │   │   ├── config.rs          # Config options tab
-│   │   ├── patches.rs         # Patch download/manage tab
+│   │   ├── patches.rs         # Patch download/manage tab (enhanced)
 │   │   └── build.rs           # makepkg runner + log tab
-│   └── core/
+│   ├── core/
+│   │   ├── mod.rs
+│   │   ├── kernel_fetcher.rs  # HTTP fetch + HTML parse git.kernel.org tags
+│   │   ├── config_manager.rs  # Parse/write customization.cfg
+│   │   ├── patch_manager.rs   # Download patches, manage patch dirs, compute SHA-256
+│   │   ├── patch_registry.rs  # Load/save patch_registry.json; update-check via HTTP HEAD
+│   │   └── build_manager.rs   # Subprocess spawn + line-by-line channel output
+│   └── data/
 │       ├── mod.rs
-│       ├── kernel_fetcher.rs  # HTTP fetch + HTML parse git.kernel.org tags
-│       ├── config_manager.rs  # Parse/write customization.cfg
-│       ├── patch_manager.rs   # Download patches, manage patch dirs
-│       └── build_manager.rs   # Subprocess spawn + line-by-line channel output
+│       └── catalog.rs         # Hardcoded Vec<CatalogEntry> of known userpatch sources
 └── submodules/
     ├── linux-tkg/              # git submodule (Frogging-Family/linux-tkg)
     └── wine-tkg-git/           # git submodule (Frogging-Family/wine-tkg-git)
 ```
+
+Add `.tkg-gui/` to `.gitignore` so the local patch registry is not committed.
 
 ---
 
@@ -90,6 +100,9 @@ egui  = "0.29"
 ureq  = "2"
 scraper = "0.20"
 regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 ```
 
 ---
@@ -294,6 +307,252 @@ pub struct PatchesTab {
 
 ---
 
+## Automatic Userpatch Download & Tracking
+
+This section describes the three new components that extend the basic Patches tab
+into a full automatic download and update-tracking system.
+
+---
+
+### Patch Catalog (`src/data/catalog.rs`)
+
+A hardcoded `Vec<CatalogEntry>` of well-known userpatch sources. Each entry
+describes a remote patch with a version-aware URL template.
+
+```rust
+pub struct CatalogEntry {
+    pub id: &'static str,          // unique slug, e.g. "pf-kernel"
+    pub name: &'static str,        // human-readable, e.g. "pf-kernel patchset"
+    pub description: &'static str, // one-line summary
+    pub url_template: &'static str,// URL with {series} placeholder, e.g.
+                                   // "https://codeberg.org/pf-kernel/linux/raw/tag/v{series}-pf1/0001-pf-kernel.patch"
+    pub filename_template: &'static str, // e.g. "pf-{series}.patch"
+    pub supported_series: &'static [&'static str], // e.g. &["6.12", "6.13"]
+}
+
+pub fn catalog() -> &'static [CatalogEntry] { &CATALOG }
+
+static CATALOG: &[CatalogEntry] = &[
+    CatalogEntry {
+        id: "pf-kernel",
+        name: "pf-kernel patchset",
+        description: "Post-factum kernel patchset: BFQ, HRTIMER, graysky2 CPU opts",
+        url_template: "https://codeberg.org/pf-kernel/linux/raw/tag/v{series}-pf1/0001-pf-kernel.patch",
+        filename_template: "pf-{series}.patch",
+        supported_series: &["6.12", "6.13"],
+    },
+    CatalogEntry {
+        id: "clearlinux",
+        name: "Clear Linux patches",
+        description: "Intel Clear Linux performance and latency patches",
+        url_template: "https://raw.githubusercontent.com/clearlinux-pkgs/linux/main/0001-i8042-decrease-debug-message-level-to-info.patch",
+        filename_template: "clearlinux-{series}.patch",
+        supported_series: &["6.12", "6.13"],
+    },
+    // … additional entries added as new series are released
+];
+```
+
+Entries whose `supported_series` does not include the current kernel series are
+hidden in the UI. When a new kernel series becomes available, update `supported_series`
+and `url_template` accordingly.
+
+---
+
+### Patch Registry (`src/core/patch_registry.rs`)
+
+Persists download metadata across sessions so the UI can show provenance,
+age, and staleness of each installed patch.
+
+**Storage location:** `<base_dir>/.tkg-gui/patch_registry.json`
+(auto-created on first use; add `.tkg-gui/` to `.gitignore`).
+
+**Data model:**
+
+```rust
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PatchMeta {
+    pub filename: String,
+    pub kernel_series: String,
+    pub source_url: Option<String>,     // None for manually dropped files
+    pub catalog_id: Option<String>,     // Some("pf-kernel") if from catalog
+    pub sha256: String,                 // hex-encoded SHA-256 of file contents
+    pub downloaded_at: String,          // RFC-3339 timestamp, e.g. "2025-06-01T12:00:00Z"
+    pub etag: Option<String>,           // last known ETag from server
+    pub last_modified: Option<String>,  // last known Last-Modified from server
+    pub update_status: UpdateStatus,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub enum UpdateStatus {
+    Unknown,    // never checked
+    UpToDate,
+    Stale,      // server reported different ETag/Last-Modified
+    CheckError(String),
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct PatchRegistry {
+    // key: "<kernel_series>/<filename>", e.g. "6.13/pf-6.13.patch"
+    pub patches: HashMap<String, PatchMeta>,
+}
+```
+
+**API surface:**
+
+```rust
+impl PatchRegistry {
+    pub fn load(base_dir: &Path) -> Self;         // reads JSON, returns Default on missing
+    pub fn save(&self, base_dir: &Path) -> Result<(), String>;
+    pub fn record_download(&mut self, meta: PatchMeta);
+    pub fn remove(&mut self, series: &str, filename: &str);
+    pub fn get(&self, series: &str, filename: &str) -> Option<&PatchMeta>;
+    pub fn all_for_series(&self, series: &str) -> Vec<&PatchMeta>;
+}
+```
+
+**Update checking (`src/core/patch_registry.rs`):**
+
+```rust
+/// Sends an HTTP HEAD to the source URL and compares ETag / Last-Modified
+/// against the stored values. Runs in a spawned thread.
+pub fn check_update(meta: PatchMeta, tx: Sender<UpdateCheckResult>);
+
+pub enum UpdateCheckResult {
+    UpToDate { key: String },
+    Stale    { key: String },
+    Error    { key: String, reason: String },
+    NoUrl    { key: String },   // source_url was None
+}
+```
+
+`check_update` issues `ureq::head(url)` and reads the `ETag` and `Last-Modified`
+response headers. If neither value matches what is stored in `PatchMeta`, the
+patch is marked `Stale`. A `None` source URL immediately emits `NoUrl`.
+
+---
+
+### SHA-256 Hashing in `patch_manager.rs`
+
+Extend `patch_manager::download_patch` to compute a SHA-256 digest while
+streaming the response body to disk:
+
+```rust
+use sha2::{Sha256, Digest};
+
+// Inside the streaming loop:
+let mut hasher = Sha256::new();
+// … read chunks …
+hasher.update(&chunk);
+// …
+let hex = format!("{:x}", hasher.finalize());
+// Return alongside DownloadResult::Success
+```
+
+The registry record is populated from this result immediately after download.
+
+---
+
+### Enhanced Patches Tab (`src/tabs/patches.rs`)
+
+**Extended state struct:**
+
+```rust
+pub struct PatchesTab {
+    // --- existing ---
+    url_input: String,
+    filename_input: String,
+    kernel_series: String,
+    patches: Vec<PatchEntry>,          // filesystem scan
+    download_rx: Option<Receiver<DownloadResult>>,
+    status: String,
+
+    // --- new ---
+    registry: PatchRegistry,           // loaded at tab construction
+    catalog_filter: String,            // search box for catalog entries
+    update_rx: Option<Receiver<UpdateCheckResult>>,
+    update_status: String,
+    show_catalog: bool,                // toggle catalog panel visibility
+}
+```
+
+**UI layout changes:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  [▼ Available Patches (Catalog)]   kernel series: 6.13  │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  🔍 filter catalog…                               │  │
+│  │                                                   │  │
+│  │  pf-kernel patchset          [Download]           │  │
+│  │  Post-factum: BFQ, HRTIMER…  ✓ installed         │  │
+│  │                                                   │  │
+│  │  Clear Linux patches         [Download]           │  │
+│  │  Intel perf & latency…                            │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  [▼ Download from URL]                                  │
+│  URL: ___________________  Filename: __________         │
+│  [Download]   status: …                                 │
+│                                                         │
+│  [▼ Installed Patches]                                  │
+│  Dir: submodules/linux-tkg/linux6.13-tkg-userpatches/  │
+│  [Open in File Manager]   [Check All for Updates]       │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │  ☑ pf-6.13.patch          🟢 up-to-date          │  │
+│  │    src: codeberg.org/…  2025-06-01  sha: a3f9…   │  │
+│  │    [Check Update]  [Re-download]  [Delete]        │  │
+│  │                                                   │  │
+│  │  ☑ mypatch.patch          ⬜ no source tracked   │  │
+│  │    [Delete]                                       │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Update status badges:**
+
+| `UpdateStatus` | Badge |
+|---|---|
+| `Unknown` | ⬜ never checked |
+| `UpToDate` | 🟢 up-to-date |
+| `Stale` | 🟡 update available |
+| `CheckError` | 🔴 check failed |
+| no source URL | ⬜ no source tracked |
+
+**Interactions:**
+
+- **Catalog `[Download]`**: Pre-fills URL and filename from catalog template,
+  then calls the same download path. On success records `catalog_id` and
+  `source_url` in the registry.
+- **`[Check Update]`** (per row): spawns `patch_registry::check_update` in a
+  thread, result arrives via `update_rx`.
+- **`[Check All for Updates]`**: iterates all installed patches that have a
+  `source_url`, spawns one thread per patch, all use the same `update_rx`.
+- **`[Re-download]`**: re-uses the stored `source_url` and `filename` from the
+  registry entry, runs the same download path, updates `sha256` and timestamps.
+- **Stale detection on tab open**: if the registry has entries that have never
+  been checked (`UpdateStatus::Unknown`) and a `source_url` is present, trigger
+  `check_update` automatically in the background.
+
+---
+
+### Auto-check on Kernel Version Change
+
+In `TkgApp::update()`, compare the current `_version` config value against the
+previous frame's value. When the kernel series changes:
+
+1. Re-derive `patches_tab.kernel_series` from the new `_version`.
+2. Re-scan the patch directory for the new series.
+3. Fire `check_update` for all registered patches in the new series that have a
+   `source_url`.
+4. Show a notification in the Patches tab status bar:
+   `"Kernel series changed to 6.14 — checking patches for updates…"`
+
+This gives users an automatic signal to refresh/re-download patches whenever they
+switch kernel versions.
+
+---
+
 ## Tab 4 — Build (`src/tabs/build.rs`)
 
 **State struct:**
@@ -363,14 +622,17 @@ fn main() -> eframe::Result<()> {
 ## Implementation Order
 
 1. Fix `.gitmodules` (add wine-tkg-git, remove duplicate root entry)
-2. Scaffold `Cargo.toml` and empty `src/` module tree
-3. Implement `src/core/config_manager.rs`
-4. Implement `src/core/kernel_fetcher.rs`
-5. Implement `src/core/patch_manager.rs`
-6. Implement `src/core/build_manager.rs`
-7. Implement `src/app.rs` + `src/main.rs`
-8. Implement `src/tabs/kernel.rs`
-9. Implement `src/tabs/config.rs`
-10. Implement `src/tabs/patches.rs`
-11. Implement `src/tabs/build.rs`
-12. Commit and push to `claude/plan-kernel-gui-M25jK`
+2. Add `.tkg-gui/` to `.gitignore`
+3. Scaffold `Cargo.toml` (including `serde`, `serde_json`, `sha2`) and empty `src/` module tree
+4. Implement `src/core/config_manager.rs`
+5. Implement `src/core/kernel_fetcher.rs`
+6. Implement `src/data/catalog.rs` — hardcoded `CatalogEntry` list
+7. Implement `src/core/patch_registry.rs` — `PatchRegistry` load/save + `check_update`
+8. Implement `src/core/patch_manager.rs` — download with SHA-256 streaming hash
+9. Implement `src/core/build_manager.rs`
+10. Implement `src/app.rs` + `src/main.rs` (wire kernel-version-change detection)
+11. Implement `src/tabs/kernel.rs`
+12. Implement `src/tabs/config.rs`
+13. Implement `src/tabs/patches.rs` — full catalog + registry + update-check UI
+14. Implement `src/tabs/build.rs`
+15. Commit and push
