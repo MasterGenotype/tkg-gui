@@ -1,0 +1,11 @@
+# Build artifacts
+/target/
+
+# Patch registry (local state)
+/.tkg-gui/
+
+# Editor files
+*.swp
+*~
+.idea/
+.vscode/
