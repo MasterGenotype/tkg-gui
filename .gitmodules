@@ -1,0 +1,6 @@
+[submodule "linux-tkg"]
+	path = linux-tkg
+	url = https://github.com/Frogging-Family/linux-tkg
+[submodule "submodules/linux-tkg"]
+	path = submodules/linux-tkg
+	url = https://github.com/Frogging-Family/linux-tkg
