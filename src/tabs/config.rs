@@ -70,6 +70,18 @@ impl ConfigTab {
                         ("upds", "UPDS"),
                         ("muqss", "MuQSS"),
                     ]);
+                    self.combo_option(ui, "_sched_yield_type", "Sched Yield Type", &[
+                        ("0", "No yield"),
+                        ("1", "Yield to better priority (default)"),
+                        ("2", "Expire timeslice"),
+                    ]);
+                    self.combo_option(ui, "_rr_interval", "Round Robin Interval", &[
+                        ("default", "Default"),
+                        ("2", "2ms"),
+                        ("4", "4ms"),
+                        ("6", "6ms"),
+                        ("8", "8ms"),
+                    ]);
                 });
 
             // Compiler
@@ -125,15 +137,20 @@ impl ConfigTab {
                 .show(ui, |ui| {
                     self.combo_option(ui, "_processor_opt", "Processor Optimization", &[
                         ("", "Default"),
-                        ("generic", "Generic"),
-                        ("zen", "Zen"),
-                        ("zen2", "Zen 2"),
-                        ("zen3", "Zen 3"),
-                        ("zen4", "Zen 4"),
-                        ("skylake", "Skylake"),
-                        ("native_amd", "Native AMD"),
-                        ("native_intel", "Native Intel"),
-                        ("intel", "Intel"),
+                        ("x86-64", "x86-64 (baseline)"),
+                        ("x86-64-v2", "x86-64-v2 (~2008+)"),
+                        ("x86-64-v3", "x86-64-v3 (~2013+)"),
+                        ("x86-64-v4", "x86-64-v4 (Skylake/Zen4+)"),
+                        ("native", "Native (auto-detect)"),
+                        ("znver5", "Zen 5 (Ryzen 9000)"),
+                        ("znver4", "Zen 4 (Ryzen 7000/8000)"),
+                        ("znver3", "Zen 3 (Ryzen 5000/6000)"),
+                        ("znver2", "Zen 2 (Ryzen 3000/4000)"),
+                        ("znver1", "Zen 1 (Ryzen 1000/2000)"),
+                        ("arrowlake-s", "Arrow Lake-S (Core Ultra 200)"),
+                        ("raptorlake", "Raptor Lake (13th/14th gen)"),
+                        ("alderlake", "Alder Lake (12th gen)"),
+                        ("skylake", "Skylake (6th-9th gen)"),
                     ]);
                     self.combo_option(ui, "_timer_freq", "Timer Frequency", &[
                         ("100", "100 Hz"),
@@ -182,12 +199,10 @@ impl ConfigTab {
                         ("olddefconfig", "olddefconfig"),
                         ("oldconfig", "oldconfig"),
                     ]);
-                    self.combo_option(ui, "_menunconfig", "Menu Config", &[
-                        ("false", "Disabled"),
-                        ("1", "menuconfig"),
-                        ("2", "nconfig"),
-                        ("3", "xconfig"),
-                    ]);
+                    self.text_option(ui, "_kernel_work_folder", "Kernel Work Folder");
+                    self.text_option(ui, "_kernel_source_folder", "Kernel Source Folder");
+                    self.checkbox_option(ui, "_offline", "Offline Mode");
+                    self.checkbox_option(ui, "_nofallback", "No Fallback (exit on error)");
                 });
 
             // Patches & Features
@@ -195,16 +210,21 @@ impl ConfigTab {
                 .default_open(false)
                 .show(ui, |ui| {
                     self.checkbox_option(ui, "_user_patches", "User Patches");
+                    self.checkbox_option(ui, "_user_patches_no_confirm", "Skip User Patch Confirm");
                     self.text_option(ui, "_community_patches", "Community Patches");
                     self.checkbox_option(ui, "_clear_patches", "Clear Linux Patches");
                     self.checkbox_option(ui, "_openrgb", "OpenRGB");
                     self.checkbox_option(ui, "_acs_override", "ACS Override");
                     self.checkbox_option(ui, "_preempt_rt", "PREEMPT_RT");
                     self.checkbox_option(ui, "_fsync_backport", "Fsync Backport");
+                    self.checkbox_option(ui, "_fsync_legacy", "Fsync Legacy");
                     self.checkbox_option(ui, "_ntsync", "NTSync");
                     self.checkbox_option(ui, "_zenify", "Zenify");
                     self.checkbox_option(ui, "_glitched_base", "Glitched Base");
-                    self.checkbox_option(ui, "_bcachefs", "Bcachefs");
+                    self.checkbox_option(ui, "_mglru", "MGLRU (Multi-Gen LRU)");
+                    self.checkbox_option(ui, "_irq_threading", "Force IRQ Threading");
+                    self.checkbox_option(ui, "_smt_nice", "SMT Nice");
+                    self.checkbox_option(ui, "_random_trust_cpu", "Trust CPU RNG");
                 });
 
             // Build & Debug
@@ -218,10 +238,23 @@ impl ConfigTab {
                     self.checkbox_option(ui, "_misc_adds", "Misc Additions");
                     self.checkbox_option(ui, "_kernel_on_diet", "Kernel on Diet");
                     self.checkbox_option(ui, "_modprobeddb", "modprobed-db");
-                    self.checkbox_option(ui, "_random_trust_cpu", "Trust CPU RNG");
+                    self.text_option(ui, "_modprobeddb_db_path", "modprobed-db Path");
                     self.checkbox_option(ui, "_config_fragments", "Config Fragments");
+                    self.checkbox_option(ui, "_config_fragments_no_confirm", "Skip Config Fragments Confirm");
                     self.checkbox_option(ui, "_NUKR", "NUKR");
                     self.checkbox_option(ui, "_force_all_threads", "Force All Threads");
+                    self.combo_option(ui, "_menunconfig", "Menu Config", &[
+                        ("0", "Disabled"),
+                        ("1", "menuconfig"),
+                        ("2", "nconfig"),
+                        ("3", "xconfig"),
+                    ]);
+                    self.combo_option(ui, "_install_after_building", "Install After Building", &[
+                        ("prompt", "Prompt"),
+                        ("true", "Yes"),
+                        ("false", "No"),
+                    ]);
+                    self.text_option(ui, "_NR_CPUS_value", "Max CPUs (NR_CPUS)");
                 });
         });
     }
@@ -307,11 +340,38 @@ impl ConfigTab {
     }
 
     pub fn set_version(&mut self, version: &str) {
-        self.values.insert("_version".to_string(), version.to_string());
+        // Ensure version has 'v' prefix as required by linux-tkg
+        let version = if version.starts_with('v') {
+            version.to_string()
+        } else {
+            format!("v{}", version)
+        };
+        self.values.insert("_version".to_string(), version);
         self.dirty = true;
     }
 
     pub fn get_version(&self) -> Option<String> {
         self.values.get("_version").cloned()
+    }
+
+    /// Save config to the given base directory path
+    pub fn save_to(&mut self, base_dir: &std::path::Path) {
+        let config_path = base_dir
+            .join("submodules")
+            .join("linux-tkg")
+            .join("customization.cfg");
+        self.save_config(&config_path);
+    }
+
+    /// Set the kernel work folder for offline mode
+    pub fn set_kernel_work_folder(&mut self, folder: &str) {
+        self.values.insert("_kernel_work_folder".to_string(), folder.to_string());
+        self.dirty = true;
+    }
+
+    /// Enable offline mode (use pre-downloaded sources)
+    pub fn set_offline_mode(&mut self, enabled: bool) {
+        self.values.insert("_offline".to_string(), if enabled { "true" } else { "false" }.to_string());
+        self.dirty = true;
     }
 }

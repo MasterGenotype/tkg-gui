@@ -1,4 +1,5 @@
-use crate::core::build_manager::{self, BuildMsg};
+use crate::core::build_manager::{self, BuildHandle, BuildMsg};
+use crate::core::config_manager::ConfigManager;
 use egui::{Context, RichText, Ui};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
@@ -17,6 +18,7 @@ pub enum LogLevel {
     Stage,
     Warning,
     Error,
+    Input,
 }
 
 pub struct LogLine {
@@ -28,7 +30,9 @@ pub struct BuildTab {
     log: Vec<LogLine>,
     state: BuildState,
     rx: Option<Receiver<BuildMsg>>,
+    build_handle: Option<BuildHandle>,
     auto_scroll: bool,
+    input_text: String,
 }
 
 impl Default for BuildTab {
@@ -37,7 +41,9 @@ impl Default for BuildTab {
             log: Vec::new(),
             state: BuildState::Idle,
             rx: None,
+            build_handle: None,
             auto_scroll: true,
+            input_text: String::new(),
         }
     }
 }
@@ -82,6 +88,7 @@ impl BuildTab {
         
         if should_clear_rx {
             self.rx = None;
+            self.build_handle = None;
         }
         if got_messages {
             ctx.request_repaint();
@@ -115,6 +122,7 @@ impl BuildTab {
                 .clicked()
             {
                 self.rx = None;
+                self.build_handle = None;
                 self.state = BuildState::Idle;
                 self.log.push(LogLine {
                     text: "==> Stopped monitoring".to_string(),
@@ -161,6 +169,7 @@ impl BuildTab {
         // Log output
         egui::ScrollArea::vertical()
             .stick_to_bottom(self.auto_scroll)
+            .max_height(ui.available_height() - 40.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 for line in &self.log {
@@ -169,6 +178,7 @@ impl BuildTab {
                         LogLevel::Stage => egui::Color32::GREEN,
                         LogLevel::Warning => egui::Color32::YELLOW,
                         LogLevel::Error => egui::Color32::RED,
+                        LogLevel::Input => egui::Color32::LIGHT_BLUE,
                     };
                     let text = RichText::new(&line.text).color(color).monospace();
                     if line.level == LogLevel::Stage {
@@ -178,6 +188,44 @@ impl BuildTab {
                     }
                 }
             });
+
+        // Input field for interactive builds
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Input:");
+            let response = ui.add_sized(
+                [ui.available_width() - 80.0, 20.0],
+                egui::TextEdit::singleline(&mut self.input_text)
+                    .hint_text("Type response and press Enter...")
+                    .font(egui::TextStyle::Monospace),
+            );
+
+            let can_send = self.state == BuildState::Running && self.build_handle.is_some();
+            let send_clicked = ui.add_enabled(can_send, egui::Button::new("Send")).clicked();
+            let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            if can_send && (send_clicked || enter_pressed) && !self.input_text.is_empty() {
+                if let Some(handle) = &self.build_handle {
+                    let input = self.input_text.clone();
+                    self.log.push(LogLine {
+                        text: format!(">>> {}", input),
+                        level: LogLevel::Input,
+                    });
+                    if let Err(e) = handle.send_input(&input) {
+                        self.log.push(LogLine {
+                            text: format!("Error sending input: {}", e),
+                            level: LogLevel::Error,
+                        });
+                    }
+                    self.input_text.clear();
+                }
+            }
+
+            // Re-focus input field after sending
+            if enter_pressed {
+                response.request_focus();
+            }
+        });
 
         // Keep repainting while building
         if self.state == BuildState::Running {
@@ -193,10 +241,35 @@ impl BuildTab {
             level: LogLevel::Stage,
         });
 
+        // Detect distro from config to determine build command
+        let config_path = work_dir.join("customization.cfg");
+        let use_makepkg = if let Ok(config) = ConfigManager::load(&config_path) {
+            let distro = config.get_all_options().get("_distro").cloned().unwrap_or_default();
+            distro == "Arch"
+        } else {
+            false
+        };
+
+        let cmd_name = if use_makepkg {
+            "makepkg -si"
+        } else {
+            "./install.sh install"
+        };
+
+        self.log.push(LogLine {
+            text: format!("==> Running {}", cmd_name),
+            level: LogLevel::Stage,
+        });
+        self.log.push(LogLine {
+            text: "    (Use the input field below to respond to prompts)".to_string(),
+            level: LogLevel::Normal,
+        });
+
         let (tx, rx) = channel();
         self.rx = Some(rx);
 
-        build_manager::start_build(work_dir.to_path_buf(), tx);
+        let handle = build_manager::start_build(work_dir.to_path_buf(), tx, use_makepkg);
+        self.build_handle = Some(handle);
         ctx.request_repaint();
     }
 }

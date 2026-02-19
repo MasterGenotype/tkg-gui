@@ -57,6 +57,7 @@ impl eframe::App for TkgApp {
                 if let Some(version) = self.kernel_tab.get_selected_version() {
                     if ui.button("📋 Apply Version to Config").clicked() {
                         self.config_tab.set_version(&version);
+                        self.config_tab.save_to(&self.base_dir);
                         if let Some(series) = self.kernel_tab.get_kernel_series() {
                             self.patches_tab.set_kernel_series(&series);
                         }

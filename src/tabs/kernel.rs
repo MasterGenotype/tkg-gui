@@ -1,7 +1,9 @@
+use crate::core::kernel_downloader::{self, DownloadProgress};
 use crate::core::kernel_fetcher::{
     self, get_previous_version, CommitInfo, FetchResult, ShortlogResult, VersionInfo,
 };
 use egui::{Context, RichText, Ui};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
@@ -16,6 +18,11 @@ pub struct KernelTab {
     shortlog: Vec<CommitInfo>,
     shortlog_status: String,
     comparing_versions: Option<(String, String)>,
+    // Download state
+    download_rx: Option<Receiver<DownloadProgress>>,
+    download_status: String,
+    download_progress: Option<(u64, Option<u64>)>, // (downloaded, total)
+    downloaded_path: Option<PathBuf>,
 }
 
 impl Default for KernelTab {
@@ -30,6 +37,10 @@ impl Default for KernelTab {
             shortlog: Vec::new(),
             shortlog_status: String::new(),
             comparing_versions: None,
+            download_rx: None,
+            download_status: String::new(),
+            download_progress: None,
+            downloaded_path: None,
         }
     }
 }
@@ -75,6 +86,42 @@ impl KernelTab {
         }
         if should_clear_shortlog_rx {
             self.shortlog_rx = None;
+        }
+
+        // Drain download progress updates
+        let mut should_clear_download_rx = false;
+        if let Some(rx) = &self.download_rx {
+            while let Ok(progress) = rx.try_recv() {
+                match progress {
+                    DownloadProgress::Started(total) => {
+                        self.download_status = "Downloading...".to_string();
+                        self.download_progress = Some((0, total));
+                    }
+                    DownloadProgress::Downloading(downloaded) => {
+                        if let Some((_, total)) = &self.download_progress {
+                            self.download_progress = Some((downloaded, *total));
+                        }
+                    }
+                    DownloadProgress::Extracting => {
+                        self.download_status = "Extracting...".to_string();
+                        self.download_progress = None;
+                    }
+                    DownloadProgress::Complete(path) => {
+                        self.download_status = format!("✓ Downloaded to: {}", path.display());
+                        self.downloaded_path = Some(path);
+                        self.download_progress = None;
+                        should_clear_download_rx = true;
+                    }
+                    DownloadProgress::Error(e) => {
+                        self.download_status = format!("✗ Error: {}", e);
+                        self.download_progress = None;
+                        should_clear_download_rx = true;
+                    }
+                }
+            }
+        }
+        if should_clear_download_rx {
+            self.download_rx = None;
         }
 
         ui.heading("🐧 Kernel Version Browser");
@@ -239,6 +286,73 @@ impl KernelTab {
                     selected
                 );
                 ui.hyperlink_to("View on kernel.org", url);
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Download section
+                ui.heading("📥 Download Sources");
+                ui.add_space(4.0);
+
+                let download_url = kernel_downloader::get_download_url(selected);
+                ui.label(
+                    RichText::new(format!("From: {}", download_url))
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+
+                ui.add_space(4.0);
+
+                let is_downloading = self.download_rx.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!is_downloading, egui::Button::new("⬇ Download Kernel Sources"))
+                        .clicked()
+                    {
+                        self.start_download(selected.clone(), ctx.clone());
+                    }
+                });
+
+                // Show download progress
+                if let Some((downloaded, total)) = &self.download_progress {
+                    ui.add_space(4.0);
+                    if let Some(total) = total {
+                        let progress = *downloaded as f32 / *total as f32;
+                        ui.add(egui::ProgressBar::new(progress).show_percentage());
+                        ui.label(format!(
+                            "{} / {}",
+                            kernel_downloader::format_bytes(*downloaded),
+                            kernel_downloader::format_bytes(*total)
+                        ));
+                    } else {
+                        ui.label(format!(
+                            "Downloaded: {}",
+                            kernel_downloader::format_bytes(*downloaded)
+                        ));
+                    }
+                }
+
+                if !self.download_status.is_empty() {
+                    ui.add_space(4.0);
+                    let color = if self.download_status.starts_with('✓') {
+                        egui::Color32::GREEN
+                    } else if self.download_status.starts_with('✗') {
+                        egui::Color32::RED
+                    } else {
+                        egui::Color32::YELLOW
+                    };
+                    ui.label(RichText::new(&self.download_status).color(color));
+                }
+
+                if let Some(path) = &self.downloaded_path {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("Ready for build at: {}", path.display()))
+                            .small()
+                            .color(egui::Color32::LIGHT_GREEN),
+                    );
+                }
             } else {
                 ui.label("Select a version to see details");
             }
@@ -268,6 +382,43 @@ impl KernelTab {
         thread::spawn(move || {
             let result = kernel_fetcher::fetch_shortlog(&from, &to);
             let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_download(&mut self, version: String, ctx: Context) {
+        self.download_status = "Starting download...".to_string();
+        self.download_progress = None;
+        self.downloaded_path = None;
+
+        let (tx, rx) = channel();
+        self.download_rx = Some(rx);
+
+        thread::spawn(move || {
+            // Download to a standard location
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let dest_dir = PathBuf::from(home).join(".cache").join("tkg-gui").join("kernel-sources");
+
+            // Spawn a repaint thread to keep UI updated during download
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+
+            let running = Arc::new(AtomicBool::new(true));
+            let running_clone = running.clone();
+            let ctx_clone = ctx.clone();
+
+            let repaint_handle = thread::spawn(move || {
+                while running_clone.load(Ordering::Relaxed) {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    ctx_clone.request_repaint();
+                }
+            });
+
+            let _ = kernel_downloader::download_kernel(&version, &dest_dir, tx);
+
+            // Stop the repaint thread
+            running.store(false, Ordering::Relaxed);
+            let _ = repaint_handle.join();
             ctx.request_repaint();
         });
     }
