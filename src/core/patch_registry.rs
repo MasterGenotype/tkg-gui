@@ -46,8 +46,8 @@ pub struct PatchRegistry {
 }
 
 impl PatchRegistry {
-    pub fn load(base_dir: &Path) -> Self {
-        let registry_path = base_dir.join(".tkg-gui").join("patch_registry.json");
+    pub fn load(data_dir: &Path) -> Self {
+        let registry_path = data_dir.join("patch_registry.json");
         if let Ok(content) = fs::read_to_string(&registry_path) {
             serde_json::from_str(&content).unwrap_or_default()
         } else {
@@ -55,11 +55,9 @@ impl PatchRegistry {
         }
     }
 
-    pub fn save(&self, base_dir: &Path) -> Result<(), String> {
-        let tkg_dir = base_dir.join(".tkg-gui");
-        fs::create_dir_all(&tkg_dir).map_err(|e| e.to_string())?;
-
-        let registry_path = tkg_dir.join("patch_registry.json");
+    pub fn save(&self, data_dir: &Path) -> Result<(), String> {
+        fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+        let registry_path = data_dir.join("patch_registry.json");
         let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(&registry_path, content).map_err(|e| e.to_string())
     }

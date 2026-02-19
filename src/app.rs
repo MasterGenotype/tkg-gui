@@ -1,5 +1,8 @@
-use crate::tabs::{build::BuildTab, config::ConfigTab, kernel::KernelTab, patches::PatchesTab};
-use std::path::PathBuf;
+use crate::settings::AppSettings;
+use crate::tabs::{
+    build::BuildTab, config::ConfigTab, kernel::KernelTab, patches::PatchesTab,
+    settings::SettingsTab,
+};
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
@@ -7,6 +10,7 @@ pub enum Tab {
     Config,
     Patches,
     Build,
+    Settings,
 }
 
 pub struct TkgApp {
@@ -15,35 +19,37 @@ pub struct TkgApp {
     config_tab: ConfigTab,
     patches_tab: PatchesTab,
     build_tab: BuildTab,
-    base_dir: PathBuf,
+    settings_tab: SettingsTab,
+    settings: AppSettings,
 }
 
 impl TkgApp {
     pub fn new() -> Self {
-        // Find the base directory (containing submodules/linux-tkg)
-        let base_dir = find_base_dir().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
-
+        let settings = AppSettings::load();
         Self {
             active_tab: Tab::Kernel,
             kernel_tab: KernelTab::default(),
             config_tab: ConfigTab::default(),
             patches_tab: PatchesTab::default(),
             build_tab: BuildTab::default(),
-            base_dir,
+            settings_tab: SettingsTab::default(),
+            settings,
         }
     }
 }
 
 impl eframe::App for TkgApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let linux_tkg_path = self.settings.linux_tkg_path.clone();
+        let data_dir = AppSettings::data_dir();
+
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Kernel, "🐧 Kernel");
                 ui.selectable_value(&mut self.active_tab, Tab::Config, "⚙ Config");
                 ui.selectable_value(&mut self.active_tab, Tab::Patches, "🩹 Patches");
                 ui.selectable_value(&mut self.active_tab, Tab::Build, "🔨 Build");
+                ui.selectable_value(&mut self.active_tab, Tab::Settings, "🔧 Settings");
 
                 ui.separator();
 
@@ -62,39 +68,13 @@ impl eframe::App for TkgApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.active_tab {
                 Tab::Kernel => self.kernel_tab.ui(ui, ctx),
-                Tab::Config => self.config_tab.ui(ui, &self.base_dir),
-                Tab::Patches => self.patches_tab.ui(ui, ctx, &self.base_dir),
-                Tab::Build => self.build_tab.ui(ui, ctx, &self.base_dir),
+                Tab::Config => self.config_tab.ui(ui, &linux_tkg_path),
+                Tab::Patches => self.patches_tab.ui(ui, ctx, &linux_tkg_path, &data_dir),
+                Tab::Build => self.build_tab.ui(ui, ctx, &linux_tkg_path),
+                Tab::Settings => {
+                    self.settings_tab.ui(ui, ctx, &mut self.settings);
+                }
             }
         });
     }
-}
-
-/// Find the base directory containing submodules/linux-tkg
-fn find_base_dir() -> Option<PathBuf> {
-    // Try current exe location first
-    if let Ok(exe_path) = std::env::current_exe() {
-        let mut dir = exe_path.parent().map(|p| p.to_path_buf());
-        while let Some(d) = dir {
-            let config_path = d.join("submodules/linux-tkg/customization.cfg");
-            if config_path.exists() {
-                return Some(d);
-            }
-            dir = d.parent().map(|p| p.to_path_buf());
-        }
-    }
-
-    // Try current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = Some(cwd);
-        while let Some(d) = dir {
-            let config_path = d.join("submodules/linux-tkg/customization.cfg");
-            if config_path.exists() {
-                return Some(d);
-            }
-            dir = d.parent().map(|p| p.to_path_buf());
-        }
-    }
-
-    None
 }

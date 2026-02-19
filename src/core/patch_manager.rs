@@ -26,13 +26,9 @@ pub enum DownloadResult {
     Error(String),
 }
 
-pub fn get_patch_dir(base_dir: &Path, kernel_series: &str) -> PathBuf {
-    // e.g. linux6.13-tkg-userpatches
-    let dir_name = format!("linux{}-tkg-userpatches", kernel_series);
-    base_dir
-        .join("submodules")
-        .join("linux-tkg")
-        .join(dir_name)
+pub fn get_patch_dir(linux_tkg_path: &Path, kernel_series: &str) -> PathBuf {
+    // e.g. linux6.13-tkg-userpatches inside the linux-tkg clone
+    linux_tkg_path.join(format!("linux{}-tkg-userpatches", kernel_series))
 }
 
 pub fn list_patches(patch_dir: &Path) -> Vec<PatchEntry> {
