@@ -43,7 +43,7 @@ impl Default for BuildTab {
 }
 
 impl BuildTab {
-    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, base_dir: &Path) {
+    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, linux_tkg_path: &Path) {
         // Drain messages from build process
         let mut should_clear_rx = false;
         let mut got_messages = false;
@@ -87,7 +87,7 @@ impl BuildTab {
             ctx.request_repaint();
         }
 
-        let work_dir = base_dir.join("submodules").join("linux-tkg");
+        let work_dir = linux_tkg_path.to_path_buf();
 
         ui.heading("🔨 Build");
         ui.add_space(4.0);

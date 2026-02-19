@@ -24,11 +24,13 @@ impl Default for ConfigTab {
 }
 
 impl ConfigTab {
-    pub fn ui(&mut self, ui: &mut Ui, base_dir: &Path) {
-        let config_path = base_dir
-            .join("submodules")
-            .join("linux-tkg")
-            .join("customization.cfg");
+    pub fn ui(&mut self, ui: &mut Ui, linux_tkg_path: &Path) {
+        let config_path = linux_tkg_path.join("customization.cfg");
+
+        // Reload if the path changed (e.g. user updated settings)
+        if self.config_path.as_deref() != Some(config_path.as_path()) {
+            self.loaded = false;
+        }
 
         // Load config if not loaded
         if !self.loaded {

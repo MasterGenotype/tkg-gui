@@ -8,7 +8,7 @@ use crate::core::patch_registry::{
 use crate::data::catalog::{catalog_for_series, CatalogEntry};
 use chrono::Utc;
 use egui::{Color32, Context, RichText, Ui};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
@@ -21,40 +21,24 @@ pub struct PatchesTab {
     download_rx: Option<Receiver<DownloadResult>>,
     status: String,
     last_url: String,
-    
+
     // Registry and catalog
     registry: PatchRegistry,
     catalog_filter: String,
     update_rx: Option<Receiver<UpdateCheckResult>>,
     update_status: String,
-    
+
     // Track pending download metadata
     pending_download: Option<PendingDownload>,
+
+    // Track last data_dir to detect changes and reload registry
+    last_data_dir: Option<PathBuf>,
 }
 
 struct PendingDownload {
     url: String,
     filename: String,
     catalog_id: Option<String>,
-}
-
-impl PatchesTab {
-    pub fn new(base_dir: &Path) -> Self {
-        Self {
-            url_input: String::new(),
-            filename_input: String::new(),
-            kernel_series: "6.13".to_string(),
-            patches: Vec::new(),
-            download_rx: None,
-            status: String::new(),
-            last_url: String::new(),
-            registry: PatchRegistry::load(base_dir),
-            catalog_filter: String::new(),
-            update_rx: None,
-            update_status: String::new(),
-            pending_download: None,
-        }
-    }
 }
 
 impl Default for PatchesTab {
@@ -72,20 +56,27 @@ impl Default for PatchesTab {
             update_rx: None,
             update_status: String::new(),
             pending_download: None,
+            last_data_dir: None,
         }
     }
 }
 
 impl PatchesTab {
-    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, base_dir: &Path) {
+    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, linux_tkg_path: &Path, data_dir: &Path) {
+        // Reload registry if data_dir changed
+        if self.last_data_dir.as_deref() != Some(data_dir) {
+            self.registry = PatchRegistry::load(data_dir);
+            self.last_data_dir = Some(data_dir.to_path_buf());
+        }
+
         // Drain download results
         let mut download_complete = false;
         if let Some(rx) = &self.download_rx {
             if let Ok(result) = rx.try_recv() {
                 match result {
                     DownloadResult::Done(info) => {
-                        self.handle_download_complete(info, base_dir);
-                        self.refresh_patches(base_dir);
+                        self.handle_download_complete(info, data_dir);
+                        self.refresh_patches(linux_tkg_path);
                         download_complete = true;
                     }
                     DownloadResult::Error(e) => {
@@ -120,7 +111,7 @@ impl PatchesTab {
                 }
             }
         }
-        
+
         // Apply updates
         for (key, status) in updates_to_apply {
             if let Some((series, filename)) = key.split_once('/') {
@@ -135,19 +126,19 @@ impl PatchesTab {
         }
 
         ui.heading("🩹 Patch Management");
-        
+
         ui.horizontal(|ui| {
             ui.label("Kernel Series:");
             ui.add(egui::TextEdit::singleline(&mut self.kernel_series).desired_width(60.0));
         });
-        
+
         ui.add_space(8.0);
 
         // Catalog section
         egui::CollapsingHeader::new("📦 Available Patches (Catalog)")
             .default_open(true)
             .show(ui, |ui| {
-                self.catalog_ui(ui, ctx, base_dir);
+                self.catalog_ui(ui, ctx, linux_tkg_path, data_dir);
             });
 
         ui.add_space(8.0);
@@ -156,7 +147,7 @@ impl PatchesTab {
         egui::CollapsingHeader::new("🔗 Download from URL")
             .default_open(false)
             .show(ui, |ui| {
-                self.url_download_ui(ui, ctx, base_dir);
+                self.url_download_ui(ui, ctx, linux_tkg_path, data_dir);
             });
 
         ui.add_space(8.0);
@@ -165,11 +156,17 @@ impl PatchesTab {
         egui::CollapsingHeader::new("📂 Installed Patches")
             .default_open(true)
             .show(ui, |ui| {
-                self.installed_patches_ui(ui, ctx, base_dir);
+                self.installed_patches_ui(ui, ctx, linux_tkg_path, data_dir);
             });
     }
 
-    fn catalog_ui(&mut self, ui: &mut Ui, ctx: &Context, base_dir: &Path) {
+    fn catalog_ui(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &Context,
+        linux_tkg_path: &Path,
+        data_dir: &Path,
+    ) {
         ui.horizontal(|ui| {
             ui.label("🔍");
             ui.add(
@@ -186,8 +183,11 @@ impl PatchesTab {
 
         if catalog.is_empty() {
             ui.label(
-                RichText::new(format!("No catalog patches available for kernel {}", self.kernel_series))
-                    .color(Color32::GRAY),
+                RichText::new(format!(
+                    "No catalog patches available for kernel {}",
+                    self.kernel_series
+                ))
+                .color(Color32::GRAY),
             );
             return;
         }
@@ -210,26 +210,44 @@ impl PatchesTab {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.strong(entry.name);
-                            
+
                             if is_installed {
                                 ui.label(RichText::new("✓ installed").color(Color32::GREEN));
                             } else {
                                 let is_downloading = self.download_rx.is_some();
                                 if ui
-                                    .add_enabled(!is_downloading, egui::Button::new("⬇ Download"))
+                                    .add_enabled(
+                                        !is_downloading,
+                                        egui::Button::new("⬇ Download"),
+                                    )
                                     .clicked()
                                 {
-                                    self.start_catalog_download(entry, base_dir, ctx.clone());
+                                    self.start_catalog_download(
+                                        entry,
+                                        linux_tkg_path,
+                                        data_dir,
+                                        ctx.clone(),
+                                    );
                                 }
                             }
                         });
-                        ui.label(RichText::new(entry.description).small().color(Color32::GRAY));
+                        ui.label(
+                            RichText::new(entry.description)
+                                .small()
+                                .color(Color32::GRAY),
+                        );
                     });
                 }
             });
     }
 
-    fn url_download_ui(&mut self, ui: &mut Ui, ctx: &Context, base_dir: &Path) {
+    fn url_download_ui(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &Context,
+        linux_tkg_path: &Path,
+        _data_dir: &Path,
+    ) {
         ui.horizontal(|ui| {
             ui.label("URL:");
             ui.add(egui::TextEdit::singleline(&mut self.url_input).desired_width(400.0));
@@ -237,7 +255,9 @@ impl PatchesTab {
 
         ui.horizontal(|ui| {
             ui.label("Filename:");
-            ui.add(egui::TextEdit::singleline(&mut self.filename_input).desired_width(200.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filename_input).desired_width(200.0),
+            );
         });
 
         ui.horizontal(|ui| {
@@ -249,18 +269,24 @@ impl PatchesTab {
                 .add_enabled(can_download, egui::Button::new("⬇ Download"))
                 .clicked()
             {
-                self.start_url_download(base_dir, ctx.clone());
+                self.start_url_download(linux_tkg_path, ctx.clone());
             }
-            
+
             if !self.status.is_empty() {
                 ui.label(&self.status);
             }
         });
     }
 
-    fn installed_patches_ui(&mut self, ui: &mut Ui, ctx: &Context, base_dir: &Path) {
-        let patch_dir = get_patch_dir(base_dir, &self.kernel_series);
-        
+    fn installed_patches_ui(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &Context,
+        linux_tkg_path: &Path,
+        data_dir: &Path,
+    ) {
+        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
+
         ui.horizontal(|ui| {
             ui.label(format!("Dir: {}", patch_dir.display()));
         });
@@ -271,21 +297,28 @@ impl PatchesTab {
                     .arg(&patch_dir)
                     .spawn();
             }
-            
+
             if ui.button("🔄 Refresh").clicked() {
-                self.refresh_patches(base_dir);
+                self.refresh_patches(linux_tkg_path);
             }
-            
+
             let has_checkable = self.patches.iter().any(|p| {
-                self.registry.get(&self.kernel_series, &p.name)
+                self.registry
+                    .get(&self.kernel_series, &p.name)
                     .map(|m| m.source_url.is_some())
                     .unwrap_or(false)
             });
-            
-            if ui.add_enabled(has_checkable && self.update_rx.is_none(), egui::Button::new("🔍 Check All for Updates")).clicked() {
+
+            if ui
+                .add_enabled(
+                    has_checkable && self.update_rx.is_none(),
+                    egui::Button::new("🔍 Check All for Updates"),
+                )
+                .clicked()
+            {
                 self.check_all_updates(ctx.clone());
             }
-            
+
             if !self.update_status.is_empty() {
                 ui.label(&self.update_status);
             }
@@ -309,16 +342,24 @@ impl PatchesTab {
 
                 for (i, patch) in self.patches.iter().enumerate() {
                     let meta = self.registry.get(&self.kernel_series, &patch.name);
-                    
+
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             // Enable/disable toggle
                             let enabled_text = if patch.enabled { "✓" } else { "✗" };
-                            let color = if patch.enabled { Color32::GREEN } else { Color32::GRAY };
+                            let color = if patch.enabled {
+                                Color32::GREEN
+                            } else {
+                                Color32::GRAY
+                            };
 
                             if ui
                                 .button(RichText::new(enabled_text).color(color))
-                                .on_hover_text(if patch.enabled { "Click to disable" } else { "Click to enable" })
+                                .on_hover_text(if patch.enabled {
+                                    "Click to disable"
+                                } else {
+                                    "Click to enable"
+                                })
                                 .clicked()
                             {
                                 to_toggle = Some(i);
@@ -349,10 +390,14 @@ impl PatchesTab {
                                     } else {
                                         url.clone()
                                     };
-                                    ui.label(RichText::new(format!("src: {}", short_url)).small().color(Color32::GRAY));
+                                    ui.label(
+                                        RichText::new(format!("src: {}", short_url))
+                                            .small()
+                                            .color(Color32::GRAY),
+                                    );
                                 }
                             });
-                            
+
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new(format!(
@@ -399,8 +444,8 @@ impl PatchesTab {
                 if let Some(i) = to_delete {
                     let patch = &self.patches[i];
                     self.registry.remove(&self.kernel_series, &patch.name);
-                    let _ = self.registry.save(base_dir);
-                    
+                    let _ = self.registry.save(data_dir);
+
                     if let Err(e) = delete_patch(patch) {
                         self.status = format!("Error: {}", e);
                     } else {
@@ -413,8 +458,9 @@ impl PatchesTab {
                 }
 
                 if let Some(url) = to_redownload {
-                    // Find the filename from existing patches
-                    if let Some(meta) = self.registry.all_for_series(&self.kernel_series)
+                    if let Some(meta) = self
+                        .registry
+                        .all_for_series(&self.kernel_series)
                         .into_iter()
                         .find(|m| m.source_url.as_ref() == Some(&url))
                     {
@@ -425,24 +471,33 @@ impl PatchesTab {
                             filename: self.filename_input.clone(),
                             catalog_id: meta.catalog_id.clone(),
                         });
-                        self.start_url_download(base_dir, ctx.clone());
+                        self.start_url_download(linux_tkg_path, ctx.clone());
                     }
                 }
             });
     }
 
-    fn start_catalog_download(&mut self, entry: &CatalogEntry, base_dir: &Path, ctx: Context) {
+    fn start_catalog_download(
+        &mut self,
+        entry: &CatalogEntry,
+        linux_tkg_path: &Path,
+        data_dir: &Path,
+        ctx: Context,
+    ) {
         let url = entry.url_for_series(&self.kernel_series);
         let filename = entry.filename_for_series(&self.kernel_series);
-        
+
         self.pending_download = Some(PendingDownload {
             url: url.clone(),
             filename: filename.clone(),
             catalog_id: Some(entry.id.to_string()),
         });
-        
-        let patch_dir = get_patch_dir(base_dir, &self.kernel_series);
+
+        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
         let dest_path = patch_dir.join(&filename);
+
+        // Store data_dir for use when download completes (via last_data_dir)
+        self.last_data_dir = Some(data_dir.to_path_buf());
 
         self.status = format!("Downloading {}...", entry.name);
         let (tx, rx) = channel();
@@ -455,8 +510,8 @@ impl PatchesTab {
         });
     }
 
-    fn start_url_download(&mut self, base_dir: &Path, ctx: Context) {
-        let patch_dir = get_patch_dir(base_dir, &self.kernel_series);
+    fn start_url_download(&mut self, linux_tkg_path: &Path, ctx: Context) {
+        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
         let dest_path = patch_dir.join(&self.filename_input);
         let url = self.url_input.clone();
 
@@ -479,11 +534,12 @@ impl PatchesTab {
         });
     }
 
-    fn handle_download_complete(&mut self, info: DownloadInfo, base_dir: &Path) {
+    fn handle_download_complete(&mut self, info: DownloadInfo, data_dir: &Path) {
         self.status = format!("Downloaded: {}", info.path.display());
-        
+
         // Get the actual filename from the path (may differ due to decompression)
-        let filename = info.path
+        let filename = info
+            .path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -493,7 +549,10 @@ impl PatchesTab {
             filename,
             kernel_series: self.kernel_series.clone(),
             source_url: self.pending_download.as_ref().map(|p| p.url.clone()),
-            catalog_id: self.pending_download.as_ref().and_then(|p| p.catalog_id.clone()),
+            catalog_id: self
+                .pending_download
+                .as_ref()
+                .and_then(|p| p.catalog_id.clone()),
             sha256: info.sha256,
             downloaded_at: Utc::now(),
             etag: info.etag,
@@ -502,20 +561,22 @@ impl PatchesTab {
         };
 
         self.registry.record_download(meta);
-        let _ = self.registry.save(base_dir);
+        let _ = self.registry.save(data_dir);
     }
 
     fn check_single_update(&mut self, meta: PatchMeta, ctx: Context) {
         self.update_status = "Checking...".to_string();
         let (tx, rx) = channel();
         self.update_rx = Some(rx);
-        
+
         check_update(meta, tx);
         ctx.request_repaint();
     }
 
     fn check_all_updates(&mut self, ctx: Context) {
-        let patches_with_urls: Vec<_> = self.patches.iter()
+        let patches_with_urls: Vec<_> = self
+            .patches
+            .iter()
             .filter_map(|p| self.registry.get(&self.kernel_series, &p.name).cloned())
             .filter(|m| m.source_url.is_some())
             .collect();
@@ -535,16 +596,12 @@ impl PatchesTab {
         ctx.request_repaint();
     }
 
-    fn refresh_patches(&mut self, base_dir: &Path) {
-        let patch_dir = get_patch_dir(base_dir, &self.kernel_series);
+    fn refresh_patches(&mut self, linux_tkg_path: &Path) {
+        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
         self.patches = list_patches(&patch_dir);
     }
 
     pub fn set_kernel_series(&mut self, series: &str) {
         self.kernel_series = series.to_string();
-    }
-    
-    pub fn load_registry(&mut self, base_dir: &Path) {
-        self.registry = PatchRegistry::load(base_dir);
     }
 }
