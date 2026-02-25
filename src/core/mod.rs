@@ -5,3 +5,5 @@ pub mod kernel_fetcher;
 pub mod patch_manager;
 pub mod patch_registry;
 pub mod repo_manager;
+pub mod wine_build_manager;
+pub mod wine_config_manager;

@@ -240,6 +240,10 @@ impl SettingsTab {
                     "linux-tkg:      {}",
                     settings.linux_tkg_path.display()
                 ));
+                ui.label(format!(
+                    "wine-tkg-git:   {}",
+                    settings.wine_tkg_path.display()
+                ));
             });
     }
 

@@ -18,16 +18,28 @@ fn default_linux_tkg_path() -> PathBuf {
         .join("linux-tkg")
 }
 
+fn default_wine_tkg_path() -> PathBuf {
+    home_dir()
+        .join(".local")
+        .join("share")
+        .join("tkg-gui")
+        .join("wine-tkg-git")
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppSettings {
     #[serde(default = "default_linux_tkg_path")]
     pub linux_tkg_path: PathBuf,
+
+    #[serde(default = "default_wine_tkg_path")]
+    pub wine_tkg_path: PathBuf,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             linux_tkg_path: default_linux_tkg_path(),
+            wine_tkg_path: default_wine_tkg_path(),
         }
     }
 }
@@ -63,5 +75,14 @@ impl AppSettings {
     /// Returns true if linux-tkg appears to be cloned at linux_tkg_path
     pub fn is_cloned(&self) -> bool {
         self.linux_tkg_path.join("customization.cfg").exists()
+    }
+
+    /// Returns true if wine-tkg-git appears to be cloned at wine_tkg_path.
+    /// Checks for the inner customization.cfg (wine-tkg-git/<subdir>/customization.cfg).
+    pub fn is_wine_cloned(&self) -> bool {
+        self.wine_tkg_path
+            .join("wine-tkg-git")
+            .join("customization.cfg")
+            .exists()
     }
 }

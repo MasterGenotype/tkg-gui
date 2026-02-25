@@ -4,6 +4,3 @@
 [submodule "submodules/wine-tkg-git"]
 	path = submodules/wine-tkg-git
 	url = https://github.com/Frogging-Family/wine-tkg-git
-[submodule "submodules/wine-tkg-wit"]
-	path = submodules/wine-tkg-wit
-	url = https://github.com/Frogging-Family/wine-tkg-git

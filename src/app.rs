@@ -1,7 +1,7 @@
 use crate::settings::AppSettings;
 use crate::tabs::{
     build::BuildTab, config::ConfigTab, kernel::KernelTab, patches::PatchesTab,
-    settings::SettingsTab,
+    settings::SettingsTab, wine::WineTab,
 };
 
 #[derive(PartialEq, Clone, Copy)]
@@ -11,6 +11,7 @@ pub enum Tab {
     Patches,
     Build,
     Settings,
+    Wine,
 }
 
 pub struct TkgApp {
@@ -20,6 +21,7 @@ pub struct TkgApp {
     patches_tab: PatchesTab,
     build_tab: BuildTab,
     settings_tab: SettingsTab,
+    wine_tab: WineTab,
     settings: AppSettings,
 }
 
@@ -33,6 +35,7 @@ impl TkgApp {
             patches_tab: PatchesTab::default(),
             build_tab: BuildTab::default(),
             settings_tab: SettingsTab::default(),
+            wine_tab: WineTab::default(),
             settings,
         }
     }
@@ -49,6 +52,7 @@ impl eframe::App for TkgApp {
                 ui.selectable_value(&mut self.active_tab, Tab::Config, "⚙ Config");
                 ui.selectable_value(&mut self.active_tab, Tab::Patches, "🩹 Patches");
                 ui.selectable_value(&mut self.active_tab, Tab::Build, "🔨 Build");
+                ui.selectable_value(&mut self.active_tab, Tab::Wine, "🍷 Wine");
                 ui.selectable_value(&mut self.active_tab, Tab::Settings, "🔧 Settings");
 
                 ui.separator();
@@ -72,6 +76,7 @@ impl eframe::App for TkgApp {
                 Tab::Config => self.config_tab.ui(ui, &linux_tkg_path),
                 Tab::Patches => self.patches_tab.ui(ui, ctx, &linux_tkg_path, &data_dir),
                 Tab::Build => self.build_tab.ui(ui, ctx, &linux_tkg_path),
+                Tab::Wine => self.wine_tab.ui(ui, ctx, &mut self.settings),
                 Tab::Settings => {
                     self.settings_tab.ui(ui, ctx, &mut self.settings);
                 }
