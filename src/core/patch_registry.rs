@@ -5,18 +5,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum UpdateStatus {
+    #[default]
     Unknown,
     UpToDate,
     Stale,
     CheckError(String),
-}
-
-impl Default for UpdateStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -99,7 +94,7 @@ impl PatchRegistry {
 /// Result of an update check
 pub enum UpdateCheckResult {
     UpToDate { key: String },
-    Stale { key: String, new_etag: Option<String>, new_last_modified: Option<String> },
+    Stale { key: String },
     Error { key: String, reason: String },
     NoUrl { key: String },
 }
@@ -138,8 +133,6 @@ pub fn check_update(meta: PatchMeta, tx: Sender<UpdateCheckResult>) {
                 if etag_changed || modified_changed {
                     let _ = tx.send(UpdateCheckResult::Stale {
                         key,
-                        new_etag,
-                        new_last_modified,
                     });
                 } else {
                     let _ = tx.send(UpdateCheckResult::UpToDate { key });

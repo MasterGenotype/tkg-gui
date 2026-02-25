@@ -37,7 +37,6 @@ pub struct PatchesTab {
 
 struct PendingDownload {
     url: String,
-    filename: String,
     catalog_id: Option<String>,
 }
 
@@ -99,7 +98,7 @@ impl PatchesTab {
                     UpdateCheckResult::UpToDate { key } => {
                         updates_to_apply.push((key, UpdateStatus::UpToDate));
                     }
-                    UpdateCheckResult::Stale { key, .. } => {
+                    UpdateCheckResult::Stale { key } => {
                         updates_to_apply.push((key, UpdateStatus::Stale));
                     }
                     UpdateCheckResult::Error { key, reason } => {
@@ -468,7 +467,6 @@ impl PatchesTab {
                         self.filename_input = meta.filename.clone();
                         self.pending_download = Some(PendingDownload {
                             url: self.url_input.clone(),
-                            filename: self.filename_input.clone(),
                             catalog_id: meta.catalog_id.clone(),
                         });
                         self.start_url_download(linux_tkg_path, ctx.clone());
@@ -489,7 +487,6 @@ impl PatchesTab {
 
         self.pending_download = Some(PendingDownload {
             url: url.clone(),
-            filename: filename.clone(),
             catalog_id: Some(entry.id.to_string()),
         });
 
@@ -518,7 +515,6 @@ impl PatchesTab {
         if self.pending_download.is_none() {
             self.pending_download = Some(PendingDownload {
                 url: url.clone(),
-                filename: self.filename_input.clone(),
                 catalog_id: None,
             });
         }

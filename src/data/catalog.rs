@@ -29,10 +29,6 @@ impl CatalogEntry {
     }
 }
 
-pub fn catalog() -> &'static [CatalogEntry] {
-    &CATALOG
-}
-
 /// Filter catalog to entries supporting the given kernel series
 pub fn catalog_for_series(series: &str) -> Vec<&'static CatalogEntry> {
     CATALOG
