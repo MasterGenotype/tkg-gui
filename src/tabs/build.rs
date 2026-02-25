@@ -244,8 +244,7 @@ impl BuildTab {
         // Detect distro from config to determine build command
         let config_path = work_dir.join("customization.cfg");
         let use_makepkg = if let Ok(config) = ConfigManager::load(&config_path) {
-            let distro = config.get_all_options().get("_distro").cloned().unwrap_or_default();
-            distro == "Arch"
+            config.get_option("_distro").unwrap_or_default() == "Arch"
         } else {
             false
         };

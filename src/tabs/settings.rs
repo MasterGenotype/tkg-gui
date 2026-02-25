@@ -4,6 +4,7 @@ use egui::{Color32, Context, RichText, Ui};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 
+#[derive(Default)]
 pub struct SettingsTab {
     /// Editable copy of the linux-tkg path (String for the text field)
     path_input: String,
@@ -19,27 +20,7 @@ pub struct SettingsTab {
     install_status: String,
 }
 
-impl Default for SettingsTab {
-    fn default() -> Self {
-        Self {
-            path_input: String::new(),
-            save_status: String::new(),
-            clone_log: Vec::new(),
-            clone_rx: None,
-            clone_running: false,
-            clone_status: String::new(),
-            install_status: String::new(),
-        }
-    }
-}
-
 impl SettingsTab {
-    /// Called once when the tab first becomes active; syncs the text field
-    /// from the current settings.
-    pub fn sync_from_settings(&mut self, settings: &AppSettings) {
-        self.path_input = settings.linux_tkg_path.to_string_lossy().to_string();
-    }
-
     pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, settings: &mut AppSettings) {
         // Initialise text field on first use
         if self.path_input.is_empty() {

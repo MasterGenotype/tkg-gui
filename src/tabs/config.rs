@@ -3,24 +3,13 @@ use egui::Ui;
 use std::collections::HashMap;
 use std::path::Path;
 
+#[derive(Default)]
 pub struct ConfigTab {
     values: HashMap<String, String>,
     loaded: bool,
     dirty: bool,
     status: String,
     config_path: Option<std::path::PathBuf>,
-}
-
-impl Default for ConfigTab {
-    fn default() -> Self {
-        Self {
-            values: HashMap::new(),
-            loaded: false,
-            dirty: false,
-            status: String::new(),
-            config_path: None,
-        }
-    }
 }
 
 impl ConfigTab {
@@ -350,10 +339,6 @@ impl ConfigTab {
         self.dirty = true;
     }
 
-    pub fn get_version(&self) -> Option<String> {
-        self.values.get("_version").cloned()
-    }
-
     /// Save config to the given base directory path
     pub fn save_to(&mut self, base_dir: &std::path::Path) {
         let config_path = base_dir
@@ -363,15 +348,4 @@ impl ConfigTab {
         self.save_config(&config_path);
     }
 
-    /// Set the kernel work folder for offline mode
-    pub fn set_kernel_work_folder(&mut self, folder: &str) {
-        self.values.insert("_kernel_work_folder".to_string(), folder.to_string());
-        self.dirty = true;
-    }
-
-    /// Enable offline mode (use pre-downloaded sources)
-    pub fn set_offline_mode(&mut self, enabled: bool) {
-        self.values.insert("_offline".to_string(), if enabled { "true" } else { "false" }.to_string());
-        self.dirty = true;
-    }
 }
