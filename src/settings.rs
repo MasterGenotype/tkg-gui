@@ -57,6 +57,7 @@ impl AppSettings {
         }
     }
 
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::config_dir();
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
