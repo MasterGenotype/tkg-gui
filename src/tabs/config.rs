@@ -339,6 +339,7 @@ impl ConfigTab {
         self.dirty = true;
     }
 
+    #[allow(dead_code)]
     pub fn get_version(&self) -> Option<String> {
         self.values.get("_version").cloned()
     }

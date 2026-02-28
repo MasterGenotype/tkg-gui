@@ -43,6 +43,7 @@ impl WorkDir {
     }
 
     /// Explicitly remove the working directory and all contents.
+    #[allow(dead_code)]
     pub fn cleanup(&self) -> Result<(), String> {
         if self.path.exists() {
             fs::remove_dir_all(&self.path)
@@ -52,6 +53,7 @@ impl WorkDir {
     }
 
     /// Returns true if a linux-tkg working copy is present with customization.cfg.
+    #[allow(dead_code)]
     pub fn is_linux_tkg_ready(&self) -> bool {
         self.linux_tkg().join("customization.cfg").exists()
     }
