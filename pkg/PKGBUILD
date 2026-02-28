@@ -1,6 +1,6 @@
 # Maintainer: superphenotype
 pkgname=tkg-gui-git
-pkgver=1.2.3.r1.gafba3a2
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="Graphical interface for building custom Linux kernels using the linux-tkg build system"
 arch=('x86_64')
@@ -45,6 +45,5 @@ package() {
     install -dm755 "$pkgdir/usr/share/tkg-gui"
     cp -a submodules/linux-tkg "$pkgdir/usr/share/tkg-gui/linux-tkg"
 
-    # Docs
     install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }
