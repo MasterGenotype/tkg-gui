@@ -43,6 +43,11 @@ impl AppSettings {
         home_dir().join(".local").join("share").join("tkg-gui")
     }
 
+    /// Path where linux-tkg is installed by the system package (PKGBUILD).
+    pub fn installed_linux_tkg_path() -> PathBuf {
+        PathBuf::from("/usr/share/tkg-gui/linux-tkg")
+    }
+
     pub fn load() -> Self {
         let path = Self::config_dir().join("settings.json");
         if let Ok(content) = fs::read_to_string(&path) {

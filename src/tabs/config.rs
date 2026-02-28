@@ -339,12 +339,22 @@ impl ConfigTab {
         self.dirty = true;
     }
 
+<<<<<<< HEAD
     /// Save config to the given base directory path
     pub fn save_to(&mut self, base_dir: &std::path::Path) {
         let config_path = base_dir
             .join("submodules")
             .join("linux-tkg")
             .join("customization.cfg");
+=======
+    pub fn get_version(&self) -> Option<String> {
+        self.values.get("_version").cloned()
+    }
+
+    /// Save config to the given linux-tkg directory path
+    pub fn save_to(&mut self, linux_tkg_path: &std::path::Path) {
+        let config_path = linux_tkg_path.join("customization.cfg");
+>>>>>>> 5058dc7 (Integration with Deploytix)
         self.save_config(&config_path);
     }
 

@@ -3,7 +3,7 @@ use crate::core::kernel_fetcher::{
     self, get_previous_version, CommitInfo, FetchResult, ShortlogResult, VersionInfo,
 };
 use egui::{Context, RichText, Ui};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
@@ -46,7 +46,7 @@ impl Default for KernelTab {
 }
 
 impl KernelTab {
-    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context) {
+    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, kernel_sources_dir: &Path) {
         // Drain any pending fetch results
         let mut should_clear_fetch_rx = false;
         if let Some(rx) = &self.fetch_rx {
@@ -192,11 +192,11 @@ impl KernelTab {
                 });
 
             // Right column: detail panel
-            self.detail_panel(&mut cols[1], ctx);
+            self.detail_panel(&mut cols[1], ctx, kernel_sources_dir);
         });
     }
 
-    fn detail_panel(&mut self, ui: &mut Ui, ctx: &Context) {
+    fn detail_panel(&mut self, ui: &mut Ui, ctx: &Context, kernel_sources_dir: &Path) {
         ui.group(|ui| {
             if let Some(selected) = &self.selected.clone() {
                 ui.heading(format!("📋 {}", selected));
@@ -310,7 +310,7 @@ impl KernelTab {
                         .add_enabled(!is_downloading, egui::Button::new("⬇ Download Kernel Sources"))
                         .clicked()
                     {
-                        self.start_download(selected.clone(), ctx.clone());
+                        self.start_download(selected.clone(), ctx.clone(), kernel_sources_dir.to_path_buf());
                     }
                 });
 
@@ -386,7 +386,7 @@ impl KernelTab {
         });
     }
 
-    fn start_download(&mut self, version: String, ctx: Context) {
+    fn start_download(&mut self, version: String, ctx: Context, kernel_sources_dir: PathBuf) {
         self.download_status = "Starting download...".to_string();
         self.download_progress = None;
         self.downloaded_path = None;
@@ -395,9 +395,7 @@ impl KernelTab {
         self.download_rx = Some(rx);
 
         thread::spawn(move || {
-            // Download to a standard location
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            let dest_dir = PathBuf::from(home).join(".cache").join("tkg-gui").join("kernel-sources");
+            let dest_dir = kernel_sources_dir;
 
             // Spawn a repaint thread to keep UI updated during download
             use std::sync::atomic::{AtomicBool, Ordering};

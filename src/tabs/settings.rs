@@ -1,16 +1,12 @@
-use crate::core::repo_manager::{clone_linux_tkg, CloneMsg};
+use crate::core::repo_manager::{clone_linux_tkg, copy_linux_tkg, CloneMsg};
 use crate::settings::AppSettings;
 use egui::{Color32, Context, RichText, Ui};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
 
 #[derive(Default)]
 pub struct SettingsTab {
-    /// Editable copy of the linux-tkg path (String for the text field)
-    path_input: String,
-    save_status: String,
-
-    // Clone state
+    // Clone/copy state
     clone_log: Vec<String>,
     clone_rx: Option<Receiver<CloneMsg>>,
     clone_running: bool,
@@ -20,6 +16,7 @@ pub struct SettingsTab {
     install_status: String,
 }
 
+<<<<<<< HEAD
 impl SettingsTab {
     pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, settings: &mut AppSettings) {
         // Initialise text field on first use
@@ -28,6 +25,30 @@ impl SettingsTab {
         }
 
         // Drain clone output
+=======
+impl Default for SettingsTab {
+    fn default() -> Self {
+        Self {
+            clone_log: Vec::new(),
+            clone_rx: None,
+            clone_running: false,
+            clone_status: String::new(),
+            install_status: String::new(),
+        }
+    }
+}
+
+impl SettingsTab {
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &Context,
+        settings: &mut AppSettings,
+        work_dir_root: &Path,
+        linux_tkg_path: &Path,
+    ) {
+        // Drain clone/copy output
+>>>>>>> 5058dc7 (Integration with Deploytix)
         let mut clone_done = false;
         if let Some(rx) = &self.clone_rx {
             while let Ok(msg) = rx.try_recv() {
@@ -38,10 +59,10 @@ impl SettingsTab {
                     }
                     CloneMsg::Exit(code) => {
                         if code == 0 {
-                            self.clone_status = "Clone completed successfully.".to_string();
+                            self.clone_status = "Completed successfully.".to_string();
                         } else {
                             self.clone_status =
-                                format!("Clone finished with exit code {}.", code);
+                                format!("Finished with exit code {}.", code);
                         }
                         clone_done = true;
                         ctx.request_repaint();
@@ -65,85 +86,74 @@ impl SettingsTab {
         ui.heading("Settings");
         ui.add_space(8.0);
 
-        // ── linux-tkg Path ───────────────────────────────────────────────
-        egui::CollapsingHeader::new("linux-tkg Repository Path")
+        // ── Work Directory ──────────────────────────────────────────────────────
+        egui::CollapsingHeader::new("Work Directory")
             .default_open(true)
             .show(ui, |ui| {
                 ui.label(
-                    "Path to a local clone of Frogging-Family/linux-tkg. \
-                     The Config, Patches and Build tabs all read from this location.",
+                    "All build operations run inside a temporary directory. \
+                     It is cleaned up on exit (or on crash).",
                 );
                 ui.add_space(4.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Path:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.path_input)
-                            .desired_width(420.0)
-                            .hint_text("/home/user/.local/share/tkg-gui/linux-tkg"),
-                    );
-                });
+                ui.label(format!("Work dir: {}", work_dir_root.display()));
+                ui.label(format!("linux-tkg: {}", linux_tkg_path.display()));
 
                 ui.add_space(4.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Save Path").clicked() {
-                        let new_path = PathBuf::from(&self.path_input);
-                        settings.linux_tkg_path = new_path;
-                        match settings.save() {
-                            Ok(()) => {
-                                self.save_status =
-                                    format!("Saved. Path: {}", settings.linux_tkg_path.display());
-                            }
-                            Err(e) => {
-                                self.save_status = format!("Save failed: {}", e);
-                            }
-                        }
-                    }
-
-                    if !self.save_status.is_empty() {
-                        ui.label(RichText::new(&self.save_status).color(Color32::YELLOW));
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                // Status indicator: is linux-tkg already cloned here?
-                let is_cloned = settings.is_cloned();
-                if is_cloned {
+                // linux-tkg status in work dir
+                let is_ready = linux_tkg_path.join("customization.cfg").exists();
+                if is_ready {
                     ui.label(
-                        RichText::new(format!(
-                            "✓ linux-tkg found at {}",
-                            settings.linux_tkg_path.display()
-                        ))
-                        .color(Color32::GREEN),
+                        RichText::new("✓ linux-tkg ready")
+                            .color(Color32::GREEN),
                     );
                 } else {
                     ui.label(
-                        RichText::new(format!(
-                            "✗ customization.cfg not found at {}",
-                            settings.linux_tkg_path.display()
-                        ))
-                        .color(Color32::YELLOW),
+                        RichText::new("✗ linux-tkg not found in work directory")
+                            .color(Color32::YELLOW),
                     );
                 }
 
                 ui.add_space(8.0);
 
-                // Clone button
+                // Clone / copy buttons
                 ui.horizontal(|ui| {
-                    let can_clone = !self.clone_running && !is_cloned;
+                    let can_act = !self.clone_running && !is_ready;
+
+                    // Offer copy from system-installed path if available
+                    let installed = AppSettings::installed_linux_tkg_path();
+                    let has_installed = installed.join("customization.cfg").exists();
+
+                    // Also check the user's configured reference path
+                    let has_settings_ref = settings.is_cloned();
+
+                    if has_installed {
+                        if ui
+                            .add_enabled(can_act, egui::Button::new("📋 Copy from System"))
+                            .on_hover_text(format!("Copy {}", installed.display()))
+                            .clicked()
+                        {
+                            self.start_copy(&installed, linux_tkg_path, ctx.clone());
+                        }
+                    } else if has_settings_ref {
+                        if ui
+                            .add_enabled(can_act, egui::Button::new("📋 Copy from Local"))
+                            .on_hover_text(format!("Copy {}", settings.linux_tkg_path.display()))
+                            .clicked()
+                        {
+                            self.start_copy(&settings.linux_tkg_path, linux_tkg_path, ctx.clone());
+                        }
+                    }
 
                     if ui
-                        .add_enabled(can_clone, egui::Button::new("Clone linux-tkg"))
-                        .on_hover_text(if is_cloned {
-                            "Already cloned at the specified path"
-                        } else {
-                            "git clone --depth=1 https://github.com/Frogging-Family/linux-tkg"
-                        })
+                        .add_enabled(can_act, egui::Button::new("🌐 Clone from GitHub"))
+                        .on_hover_text(
+                            "git clone --depth=1 https://github.com/Frogging-Family/linux-tkg",
+                        )
                         .clicked()
                     {
-                        self.start_clone(settings.linux_tkg_path.clone(), ctx.clone());
+                        self.start_clone(linux_tkg_path.to_path_buf(), ctx.clone());
                     }
 
                     if self.clone_running {
@@ -155,7 +165,7 @@ impl SettingsTab {
                     }
                 });
 
-                // Clone log
+                // Clone/copy log
                 if !self.clone_log.is_empty() {
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical()
@@ -177,7 +187,7 @@ impl SettingsTab {
 
         ui.add_space(8.0);
 
-        // ── Install ──────────────────────────────────────────────────────
+        // ── Install ──────────────────────────────────────────────────────────────
         egui::CollapsingHeader::new("Install tkg-gui")
             .default_open(true)
             .show(ui, |ui| {
@@ -205,7 +215,7 @@ impl SettingsTab {
 
         ui.add_space(8.0);
 
-        // ── Paths info ───────────────────────────────────────────────────
+        // ── Paths info ───────────────────────────────────────────────────────────
         egui::CollapsingHeader::new("App Directories")
             .default_open(false)
             .show(ui, |ui| {
@@ -218,8 +228,8 @@ impl SettingsTab {
                     AppSettings::data_dir().join("patch_registry.json").display()
                 ));
                 ui.label(format!(
-                    "linux-tkg:      {}",
-                    settings.linux_tkg_path.display()
+                    "Work directory: {}",
+                    work_dir_root.display()
                 ));
             });
     }
@@ -232,6 +242,17 @@ impl SettingsTab {
         let (tx, rx) = channel();
         self.clone_rx = Some(rx);
         clone_linux_tkg(dest, tx);
+        ctx.request_repaint();
+    }
+
+    fn start_copy(&mut self, source: &Path, dest: &Path, ctx: Context) {
+        self.clone_log.clear();
+        self.clone_status = "Copying…".to_string();
+        self.clone_running = true;
+
+        let (tx, rx) = channel();
+        self.clone_rx = Some(rx);
+        copy_linux_tkg(source, dest, tx);
         ctx.request_repaint();
     }
 

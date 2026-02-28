@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::path::Path;
 
 pub enum CloneMsg {
     Line(String),
@@ -81,6 +82,56 @@ pub fn clone_linux_tkg(dest: PathBuf, tx: Sender<CloneMsg>) {
                     "Failed to spawn git: {}",
                     e
                 )));
+            }
+        }
+    });
+}
+
+/// Copy an existing linux-tkg directory into `dest`.
+/// Runs in a spawned thread and streams output via `tx`.
+pub fn copy_linux_tkg(source: &Path, dest: &Path, tx: Sender<CloneMsg>) {
+    let source = source.to_path_buf();
+    let dest = dest.to_path_buf();
+
+    thread::spawn(move || {
+        let _ = tx.send(CloneMsg::Line(format!(
+            "Copying {} → {}",
+            source.display(),
+            dest.display()
+        )));
+
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                let _ = tx.send(CloneMsg::SpawnError(format!(
+                    "Failed to create directory {}: {}",
+                    parent.display(),
+                    e
+                )));
+                return;
+            }
+        }
+
+        let result = Command::new("cp")
+            .arg("-a")
+            .arg("--")
+            .arg(&source)
+            .arg(&dest)
+            .output();
+
+        match result {
+            Ok(output) => {
+                if !output.stderr.is_empty() {
+                    if let Ok(stderr) = String::from_utf8(output.stderr) {
+                        for line in stderr.lines() {
+                            let _ = tx.send(CloneMsg::Line(line.to_string()));
+                        }
+                    }
+                }
+                let code = output.status.code().unwrap_or(-1);
+                let _ = tx.send(CloneMsg::Exit(code));
+            }
+            Err(e) => {
+                let _ = tx.send(CloneMsg::SpawnError(format!("Failed to run cp: {}", e)));
             }
         }
     });
