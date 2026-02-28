@@ -16,28 +16,6 @@ pub struct SettingsTab {
     install_status: String,
 }
 
-<<<<<<< HEAD
-impl SettingsTab {
-    pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, settings: &mut AppSettings) {
-        // Initialise text field on first use
-        if self.path_input.is_empty() {
-            self.path_input = settings.linux_tkg_path.to_string_lossy().to_string();
-        }
-
-        // Drain clone output
-=======
-impl Default for SettingsTab {
-    fn default() -> Self {
-        Self {
-            clone_log: Vec::new(),
-            clone_rx: None,
-            clone_running: false,
-            clone_status: String::new(),
-            install_status: String::new(),
-        }
-    }
-}
-
 impl SettingsTab {
     pub fn ui(
         &mut self,
@@ -48,7 +26,6 @@ impl SettingsTab {
         linux_tkg_path: &Path,
     ) {
         // Drain clone/copy output
->>>>>>> 5058dc7 (Integration with Deploytix)
         let mut clone_done = false;
         if let Some(rx) = &self.clone_rx {
             while let Ok(msg) = rx.try_recv() {

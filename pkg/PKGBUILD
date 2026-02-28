@@ -1,6 +1,6 @@
 # Maintainer: superphenotype
 pkgname=tkg-gui-git
-pkgver=0.1.0.r0.g0000000
+pkgver=1.2.3.r1.gafba3a2
 pkgrel=1
 pkgdesc="Graphical interface for building custom Linux kernels using the linux-tkg build system"
 arch=('x86_64')
