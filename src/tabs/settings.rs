@@ -113,14 +113,13 @@ impl SettingsTab {
                         {
                             self.start_copy(&installed, linux_tkg_path, ctx.clone());
                         }
-                    } else if has_settings_ref {
-                        if ui
+                    } else if has_settings_ref
+                        && ui
                             .add_enabled(can_act, egui::Button::new("📋 Copy from Local"))
                             .on_hover_text(format!("Copy {}", settings.linux_tkg_path.display()))
                             .clicked()
-                        {
-                            self.start_copy(&settings.linux_tkg_path, linux_tkg_path, ctx.clone());
-                        }
+                    {
+                        self.start_copy(&settings.linux_tkg_path, linux_tkg_path, ctx.clone());
                     }
 
                     if ui
