@@ -1,5 +1,8 @@
 # Build artifacts
 /target/
+/pkg/pkg/
+/pkg/src/
+/pkg/tkg-gui/
 
 # Patch registry (local state)
 /.tkg-gui/
