@@ -75,32 +75,53 @@ The Patches tab includes a curated catalog of commonly used patches:
 
 Catalog patches are filtered by kernel series so only compatible patches are shown.
 
+## Installation (Arch Linux)
+
+An AUR-style `PKGBUILD` is provided in `pkg/`:
+
+```bash
+cd pkg
+makepkg -si
+```
+
+This installs:
+- `/usr/bin/tkg-gui` — the application binary
+- `/usr/share/tkg-gui/linux-tkg` — bundled linux-tkg checkout
+- `/usr/share/applications/tkg-gui.desktop` — desktop entry (launches via `pkexec`)
+- `/usr/share/polkit-1/actions/com.tkg-gui.policy` — PolicyKit policy for privilege elevation
+
 ## Project Structure
 
 ```
 tkg-gui/
 ├── src/
-│   ├── main.rs          # Application entry point
-│   ├── app.rs           # Main app state, tab routing, toolbar
-│   ├── settings.rs      # User settings and file paths
-│   ├── core/            # Business logic (no UI code)
+│   ├── main.rs              # Application entry point
+│   ├── app.rs               # Main app state, tab routing, toolbar
+│   ├── settings.rs          # User settings and file paths
+│   ├── core/                # Business logic (no UI code)
+│   │   ├── http_client.rs       # Shared HTTP agent wrapper
 │   │   ├── kernel_fetcher.rs    # Fetches version list and commit shortlog from git.kernel.org
 │   │   ├── kernel_downloader.rs # Downloads and extracts kernel source tarballs
 │   │   ├── config_manager.rs    # Parses and writes customization.cfg
 │   │   ├── patch_manager.rs     # Downloads and manages patches
 │   │   ├── patch_registry.rs    # Persists patch metadata (SHA-256, ETags, timestamps)
 │   │   ├── build_manager.rs     # Runs makepkg/install.sh and streams output
-│   │   └── repo_manager.rs      # Clones linux-tkg repository
-│   ├── tabs/            # UI panels (one per tab)
-│   │   ├── kernel.rs    # Kernel browser with shortlog and source download
-│   │   ├── config.rs    # Configuration editor
-│   │   ├── patches.rs   # Patch catalog, download, and management
-│   │   ├── build.rs     # Build runner with log display and interactive input
-│   │   └── settings.rs  # Settings panel with clone and install helpers
+│   │   ├── repo_manager.rs      # Clones linux-tkg repository
+│   │   └── work_dir.rs         # Temporary working directory management
+│   ├── tabs/                # UI panels (one per tab)
+│   │   ├── kernel.rs        # Kernel browser with shortlog and source download
+│   │   ├── config.rs        # Configuration editor
+│   │   ├── patches.rs       # Patch catalog, download, and management
+│   │   ├── build.rs         # Build runner with log display and interactive input
+│   │   └── settings.rs      # Settings panel with clone and install helpers
 │   └── data/
-│       └── catalog.rs   # Built-in patch source catalog
+│       └── catalog.rs       # Built-in patch source catalog
+├── pkg/
+│   └── PKGBUILD             # Arch Linux package build script
+├── tkg-gui.desktop          # Desktop entry file
+├── com.tkg-gui.policy       # PolicyKit authorization policy
 └── submodules/
-    └── linux-tkg/       # linux-tkg build system (git submodule)
+    └── linux-tkg/           # linux-tkg build system (git submodule)
 ```
 
 ## Technology Stack
@@ -113,9 +134,10 @@ tkg-gui/
 | Config file parsing | [regex](https://github.com/rust-lang/regex) 1 |
 | Serialization | [serde](https://serde.rs/) + serde_json |
 | Timestamps | [chrono](https://github.com/chronotope/chrono) 0.4 |
-| Hashing | sha2 |
-| Compression | xz2, flate2 |
-| Archives | tar |
+| Hashing | [sha2](https://github.com/RustCrypto/hashes) 0.10 |
+| Compression | [xz2](https://github.com/alexcrichton/xz2-rs) 0.1, [flate2](https://github.com/rust-lang/flate2-rs) 1 |
+| Archives | [tar](https://github.com/alexcrichton/tar-rs) 0.4 |
+| TLS | [native-tls](https://github.com/sfackler/rust-native-tls) 0.2 |
 
 Background work (HTTP requests, subprocess I/O) runs in `std::thread` and communicates with the UI via `mpsc` channels — no async runtime is used.
 

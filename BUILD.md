@@ -156,13 +156,15 @@ tkg-gui/
 │   ├── settings.rs      # AppSettings struct and file I/O
 │   ├── core/            # Pure business logic, no egui imports
 │   │   ├── mod.rs
+│   │   ├── http_client.rs
 │   │   ├── kernel_fetcher.rs
 │   │   ├── kernel_downloader.rs
 │   │   ├── config_manager.rs
 │   │   ├── patch_manager.rs
 │   │   ├── patch_registry.rs
 │   │   ├── build_manager.rs
-│   │   └── repo_manager.rs
+│   │   ├── repo_manager.rs
+│   │   └── work_dir.rs
 │   ├── tabs/            # egui panel implementations
 │   │   ├── mod.rs
 │   │   ├── kernel.rs
