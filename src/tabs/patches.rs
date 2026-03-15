@@ -92,23 +92,36 @@ impl PatchesTab {
 
         // Drain update check results
         let mut updates_to_apply: Vec<(String, UpdateStatus)> = Vec::new();
+        let mut updates_done = false;
         if let Some(rx) = &self.update_rx {
-            while let Ok(result) = rx.try_recv() {
-                match result {
-                    UpdateCheckResult::UpToDate { key } => {
-                        updates_to_apply.push((key, UpdateStatus::UpToDate));
-                    }
-                    UpdateCheckResult::Stale { key } => {
-                        updates_to_apply.push((key, UpdateStatus::Stale));
-                    }
-                    UpdateCheckResult::Error { key, reason } => {
-                        updates_to_apply.push((key, UpdateStatus::CheckError(reason)));
-                    }
-                    UpdateCheckResult::NoUrl { key } => {
-                        updates_to_apply.push((key, UpdateStatus::Unknown));
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => match result {
+                        UpdateCheckResult::UpToDate { key } => {
+                            updates_to_apply.push((key, UpdateStatus::UpToDate));
+                        }
+                        UpdateCheckResult::Stale { key } => {
+                            updates_to_apply.push((key, UpdateStatus::Stale));
+                        }
+                        UpdateCheckResult::Error { key, reason } => {
+                            updates_to_apply.push((key, UpdateStatus::CheckError(reason)));
+                        }
+                        UpdateCheckResult::NoUrl { key } => {
+                            updates_to_apply.push((key, UpdateStatus::Unknown));
+                        }
+                    },
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    // All senders dropped: all threads have completed
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        updates_done = true;
+                        break;
                     }
                 }
             }
+        }
+        if updates_done {
+            self.update_rx = None;
+            self.update_status = "Update check complete.".to_string();
         }
 
         // Apply updates
@@ -442,13 +455,16 @@ impl PatchesTab {
 
                 if let Some(i) = to_delete {
                     let patch = &self.patches[i];
-                    self.registry.remove(&self.kernel_series, &patch.name);
-                    let _ = self.registry.save(data_dir);
-
-                    if let Err(e) = delete_patch(patch) {
-                        self.status = format!("Error: {}", e);
-                    } else {
-                        self.patches.remove(i);
+                    match delete_patch(patch) {
+                        Err(e) => {
+                            self.status = format!("Error: {}", e);
+                        }
+                        Ok(()) => {
+                            // Only remove from registry after successful file deletion
+                            self.registry.remove(&self.kernel_series, &patch.name);
+                            let _ = self.registry.save(data_dir);
+                            self.patches.remove(i);
+                        }
                     }
                 }
 

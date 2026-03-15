@@ -11,6 +11,7 @@ path = "src/main.rs"
 eframe = "0.29"
 egui = "0.29"
 ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
+native-tls = "0.2"
 scraper = "0.20"
 regex = "1"
 xz2 = "0.1"

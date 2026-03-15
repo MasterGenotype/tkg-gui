@@ -1,3 +1,4 @@
+use crate::core::http_client;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -88,7 +89,8 @@ fn download_file(
     dest: &Path,
     tx: &std::sync::mpsc::Sender<DownloadProgress>,
 ) -> Result<(), String> {
-    let response = ureq::get(url)
+    let response = http_client::agent()
+        .get(url)
         .call()
         .map_err(|e| format!("Failed to download: {}", e))?;
 

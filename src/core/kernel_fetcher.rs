@@ -1,3 +1,4 @@
+use crate::core::http_client;
 use regex::Regex;
 use scraper::{Html, Selector};
 
@@ -37,7 +38,8 @@ pub fn fetch_tags() -> FetchResult {
 }
 
 fn fetch_tags_inner() -> Result<Vec<VersionInfo>, String> {
-    let response = ureq::get(KERNEL_TAGS_URL)
+    let response = http_client::agent()
+        .get(KERNEL_TAGS_URL)
         .call()
         .map_err(|e| e.to_string())?;
 
@@ -92,7 +94,7 @@ fn fetch_shortlog_inner(from_version: &str, to_version: &str) -> Result<Vec<Comm
         KERNEL_BASE_URL, to_version, from_version
     );
 
-    let response = ureq::get(&url).call().map_err(|e| e.to_string())?;
+    let response = http_client::agent().get(&url).call().map_err(|e| e.to_string())?;
     let body = response.into_string().map_err(|e| e.to_string())?;
     let document = Html::parse_document(&body);
 
