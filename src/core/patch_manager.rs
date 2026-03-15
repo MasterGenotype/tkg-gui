@@ -1,3 +1,4 @@
+use crate::core::http_client;
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -102,7 +103,7 @@ fn download_patch_inner(url: &str, dest_path: &Path) -> Result<DownloadInfo, Str
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let response = ureq::get(url).call().map_err(|e| e.to_string())?;
+    let response = http_client::agent().get(url).call().map_err(|e| e.to_string())?;
     
     // Capture HTTP headers for update tracking
     let etag = response.header("ETag").map(|s| s.to_string());

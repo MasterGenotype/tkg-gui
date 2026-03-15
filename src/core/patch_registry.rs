@@ -1,3 +1,4 @@
+use crate::core::http_client;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -110,7 +111,7 @@ pub fn check_update(meta: PatchMeta, tx: Sender<UpdateCheckResult>) {
             return;
         };
 
-        let result = ureq::head(url).call();
+        let result = http_client::agent().head(url).call();
 
         match result {
             Ok(response) => {

@@ -3574,6 +3574,7 @@ dependencies = [
  "eframe",
  "egui",
  "flate2",
+ "native-tls",
  "regex",
  "scraper",
  "serde",
