@@ -1,6 +1,5 @@
 mod app;
 mod core;
-mod data;
 mod settings;
 mod tabs;
 

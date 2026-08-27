@@ -1,3 +1,7 @@
+use crate::core::patch_browser::{
+    browse_patchsets, describe_patchset, download_patchset, BrowseResult, PatchsetResult,
+    RemotePatchset,
+};
 use crate::core::patch_manager::{
     delete_patch, download_patch, extract_filename_from_url, get_patch_dir, list_patches,
     toggle_patch, DownloadInfo, DownloadResult, PatchEntry,
@@ -5,7 +9,7 @@ use crate::core::patch_manager::{
 use crate::core::patch_registry::{
     check_update, PatchMeta, PatchRegistry, UpdateCheckResult, UpdateStatus,
 };
-use crate::data::catalog::{catalog_for_series, CatalogEntry};
+use crate::settings::default_patch_repo;
 use chrono::Utc;
 use egui::{Color32, Context, RichText, Ui};
 use std::path::{Path, PathBuf};
@@ -22,11 +26,19 @@ pub struct PatchesTab {
     status: String,
     last_url: String,
 
-    // Registry and catalog
+    // Registry
     registry: PatchRegistry,
-    catalog_filter: String,
     update_rx: Option<Receiver<UpdateCheckResult>>,
     update_status: String,
+
+    // Live patch browser (configurable GitHub owner/repo)
+    patch_repo: String,
+    browse_rx: Option<Receiver<BrowseResult>>,
+    browse_results: Vec<RemotePatchset>,
+    browse_filter: String,
+    browse_status: String,
+    patchset_rx: Option<Receiver<PatchsetResult>>,
+    patchset_downloading: Option<String>,
 
     // Track pending download metadata
     pending_download: Option<PendingDownload>,
@@ -51,9 +63,15 @@ impl Default for PatchesTab {
             status: String::new(),
             last_url: String::new(),
             registry: PatchRegistry::default(),
-            catalog_filter: String::new(),
             update_rx: None,
             update_status: String::new(),
+            patch_repo: default_patch_repo(),
+            browse_rx: None,
+            browse_results: Vec::new(),
+            browse_filter: String::new(),
+            browse_status: String::new(),
+            patchset_rx: None,
+            patchset_downloading: None,
             pending_download: None,
             last_data_dir: None,
         }
@@ -131,6 +149,56 @@ impl PatchesTab {
             }
         }
 
+        // Drain patchset-browser list results
+        if let Some(rx) = &self.browse_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    BrowseResult::Done(sets) => {
+                        self.browse_status = format!("{} patchsets available", sets.len());
+                        self.browse_results = sets;
+                    }
+                    BrowseResult::Error(e) => {
+                        self.browse_status = format!("Error: {}", e);
+                        self.browse_results.clear();
+                    }
+                }
+                self.browse_rx = None;
+            }
+        }
+
+        // Drain patchset download results
+        if let Some(rx) = &self.patchset_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    PatchsetResult::Done(installed) => {
+                        let count = installed.len();
+                        for ip in installed {
+                            self.registry.record_download(PatchMeta {
+                                filename: ip.filename,
+                                kernel_series: self.kernel_series.clone(),
+                                source_url: Some(ip.source_url),
+                                catalog_id: None,
+                                sha256: ip.info.sha256,
+                                downloaded_at: Utc::now(),
+                                etag: ip.info.etag,
+                                last_modified: ip.info.last_modified,
+                                update_status: UpdateStatus::UpToDate,
+                            });
+                        }
+                        let _ = self.registry.save(data_dir);
+                        self.refresh_patches(linux_tkg_path);
+                        let name = self.patchset_downloading.take().unwrap_or_default();
+                        self.browse_status = format!("Installed {} file(s) from {}", count, name);
+                    }
+                    PatchsetResult::Error(e) => {
+                        self.browse_status = format!("Error: {}", e);
+                    }
+                }
+                self.patchset_rx = None;
+                self.patchset_downloading = None;
+            }
+        }
+
         // Auto-fill filename from URL
         if self.url_input != self.last_url {
             self.filename_input = extract_filename_from_url(&self.url_input);
@@ -146,11 +214,11 @@ impl PatchesTab {
 
         ui.add_space(8.0);
 
-        // Catalog section
-        egui::CollapsingHeader::new("📦 Available Patches (Catalog)")
+        // Live browser section
+        egui::CollapsingHeader::new(format!("🌐 Browse Patches ({})", self.patch_repo))
             .default_open(true)
             .show(ui, |ui| {
-                self.catalog_ui(ui, ctx, linux_tkg_path, data_dir);
+                self.browse_ui(ui, ctx, linux_tkg_path);
             });
 
         ui.add_space(8.0);
@@ -172,85 +240,88 @@ impl PatchesTab {
             });
     }
 
-    fn catalog_ui(
-        &mut self,
-        ui: &mut Ui,
-        ctx: &Context,
-        linux_tkg_path: &Path,
-        data_dir: &Path,
-    ) {
+    fn browse_ui(&mut self, ui: &mut Ui, ctx: &Context, linux_tkg_path: &Path) {
+        ui.horizontal(|ui| {
+            let loading = self.browse_rx.is_some();
+            if ui
+                .add_enabled(!loading, egui::Button::new("🔄 Refresh List"))
+                .on_hover_text(format!(
+                    "Fetch patchsets for kernel {} from {}",
+                    self.kernel_series, self.patch_repo
+                ))
+                .clicked()
+            {
+                self.start_browse(ctx.clone());
+            }
+
+            if loading {
+                ui.spinner();
+                ui.label("Fetching patch list…");
+            } else if !self.browse_status.is_empty() {
+                ui.label(&self.browse_status);
+            }
+        });
+
+        if self.browse_results.is_empty() {
+            ui.label(
+                RichText::new(
+                    "Click “Refresh List” to load the patchsets available for this kernel series.",
+                )
+                .color(Color32::GRAY),
+            );
+            return;
+        }
+
         ui.horizontal(|ui| {
             ui.label("🔍");
             ui.add(
-                egui::TextEdit::singleline(&mut self.catalog_filter)
-                    .hint_text("Filter catalog...")
+                egui::TextEdit::singleline(&mut self.browse_filter)
+                    .hint_text("Filter patchsets…")
                     .desired_width(200.0),
             );
         });
 
         ui.add_space(4.0);
 
-        let catalog = catalog_for_series(&self.kernel_series);
-        let filter_lower = self.catalog_filter.to_lowercase();
-
-        if catalog.is_empty() {
-            ui.label(
-                RichText::new(format!(
-                    "No catalog patches available for kernel {}",
-                    self.kernel_series
-                ))
-                .color(Color32::GRAY),
-            );
-            return;
-        }
+        let filter = self.browse_filter.to_lowercase();
+        let busy = self.patchset_rx.is_some();
+        let mut to_download: Option<RemotePatchset> = None;
 
         egui::ScrollArea::vertical()
-            .id_salt("catalog")
-            .max_height(200.0)
+            .id_salt("browse")
+            .max_height(260.0)
             .show(ui, |ui| {
-                for entry in catalog {
-                    if !filter_lower.is_empty()
-                        && !entry.name.to_lowercase().contains(&filter_lower)
-                        && !entry.description.to_lowercase().contains(&filter_lower)
-                    {
+                for set in &self.browse_results {
+                    if !filter.is_empty() && !set.name.to_lowercase().contains(&filter) {
                         continue;
                     }
 
-                    let filename = entry.filename_for_series(&self.kernel_series);
-                    let is_installed = self.patches.iter().any(|p| p.name == filename);
+                    let downloading_this =
+                        self.patchset_downloading.as_deref() == Some(set.name.as_str());
 
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            ui.strong(entry.name);
-
-                            if is_installed {
-                                ui.label(RichText::new("✓ installed").color(Color32::GREEN));
-                            } else {
-                                let is_downloading = self.download_rx.is_some();
-                                if ui
-                                    .add_enabled(
-                                        !is_downloading,
-                                        egui::Button::new("⬇ Download"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.start_catalog_download(
-                                        entry,
-                                        linux_tkg_path,
-                                        data_dir,
-                                        ctx.clone(),
-                                    );
-                                }
+                            if downloading_this {
+                                ui.spinner();
+                            } else if ui
+                                .add_enabled(!busy, egui::Button::new("⬇ Download"))
+                                .on_hover_text("Download all files in this set as .mypatch")
+                                .clicked()
+                            {
+                                to_download = Some(set.clone());
                             }
+                            ui.strong(&set.name);
                         });
-                        ui.label(
-                            RichText::new(entry.description)
-                                .small()
-                                .color(Color32::GRAY),
-                        );
+                        if let Some(hint) = describe_patchset(&set.name) {
+                            ui.label(RichText::new(hint).small().color(Color32::GRAY));
+                        }
                     });
                 }
             });
+
+        if let Some(set) = to_download {
+            self.start_patchset_download(set, linux_tkg_path, ctx.clone());
+        }
     }
 
     fn url_download_ui(
@@ -267,9 +338,7 @@ impl PatchesTab {
 
         ui.horizontal(|ui| {
             ui.label("Filename:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filename_input).desired_width(200.0),
-            );
+            ui.add(egui::TextEdit::singleline(&mut self.filename_input).desired_width(200.0));
         });
 
         ui.horizontal(|ui| {
@@ -491,33 +560,36 @@ impl PatchesTab {
             });
     }
 
-    fn start_catalog_download(
-        &mut self,
-        entry: &CatalogEntry,
-        linux_tkg_path: &Path,
-        data_dir: &Path,
-        ctx: Context,
-    ) {
-        let url = entry.url_for_series(&self.kernel_series);
-        let filename = entry.filename_for_series(&self.kernel_series);
-
-        self.pending_download = Some(PendingDownload {
-            url: url.clone(),
-            catalog_id: Some(entry.id.to_string()),
-        });
-
-        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
-        let dest_path = patch_dir.join(&filename);
-
-        // Store data_dir for use when download completes (via last_data_dir)
-        self.last_data_dir = Some(data_dir.to_path_buf());
-
-        self.status = format!("Downloading {}...", entry.name);
+    fn start_browse(&mut self, ctx: Context) {
+        let series = self.kernel_series.clone();
+        let repo = self.patch_repo.clone();
+        self.browse_status.clear();
         let (tx, rx) = channel();
-        self.download_rx = Some(rx);
+        self.browse_rx = Some(rx);
 
         thread::spawn(move || {
-            let result = download_patch(&url, &dest_path);
+            let result = browse_patchsets(&repo, &series);
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_patchset_download(
+        &mut self,
+        set: RemotePatchset,
+        linux_tkg_path: &Path,
+        ctx: Context,
+    ) {
+        let patch_dir = get_patch_dir(linux_tkg_path, &self.kernel_series);
+        let repo = self.patch_repo.clone();
+        self.patchset_downloading = Some(set.name.clone());
+        self.browse_status = format!("Downloading {}…", set.name);
+
+        let (tx, rx) = channel();
+        self.patchset_rx = Some(rx);
+
+        thread::spawn(move || {
+            let result = download_patchset(&repo, &set.path, &set.name, &patch_dir);
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -615,5 +687,15 @@ impl PatchesTab {
 
     pub fn set_kernel_series(&mut self, series: &str) {
         self.kernel_series = series.to_string();
+    }
+
+    /// Sync the browsed GitHub `owner/repo` from app settings. Clears any stale
+    /// browse results when the repo changes so the list isn't misleading.
+    pub fn set_patch_repo(&mut self, repo: &str) {
+        if self.patch_repo != repo {
+            self.patch_repo = repo.to_string();
+            self.browse_results.clear();
+            self.browse_status.clear();
+        }
     }
 }

@@ -3,6 +3,7 @@ pub mod config_manager;
 pub mod http_client;
 pub mod kernel_downloader;
 pub mod kernel_fetcher;
+pub mod patch_browser;
 pub mod patch_manager;
 pub mod patch_registry;
 pub mod repo_manager;

@@ -18,16 +18,25 @@ fn default_linux_tkg_path() -> PathBuf {
         .join("linux-tkg")
 }
 
+/// Default GitHub `owner/repo` browsed by the Patches tab.
+pub fn default_patch_repo() -> String {
+    "sirlucjan/kernel-patches".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppSettings {
     #[serde(default = "default_linux_tkg_path")]
     pub linux_tkg_path: PathBuf,
+    /// GitHub `owner/repo` used by the live patch browser.
+    #[serde(default = "default_patch_repo")]
+    pub patch_repo: String,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             linux_tkg_path: default_linux_tkg_path(),
+            patch_repo: default_patch_repo(),
         }
     }
 }
@@ -57,7 +66,6 @@ impl AppSettings {
         }
     }
 
-    #[allow(dead_code)]
     pub fn save(&self) -> Result<(), String> {
         let dir = Self::config_dir();
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
