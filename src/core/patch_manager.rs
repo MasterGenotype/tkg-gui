@@ -28,8 +28,11 @@ pub enum DownloadResult {
 }
 
 pub fn get_patch_dir(linux_tkg_path: &Path, kernel_series: &str) -> PathBuf {
-    // e.g. linux6.13-tkg-userpatches inside the linux-tkg clone
-    linux_tkg_path.join(format!("linux{}-tkg-userpatches", kernel_series))
+    // linux-tkg globs `linux${_basever}-tkg-userpatches` where
+    // `_basever="$VERSION$PATCHLEVEL"` (dot-stripped, e.g. 7.2 -> 72).
+    // Strip the dot so a dotted series ("7.2") matches the build's glob.
+    let basever: String = kernel_series.chars().filter(|c| *c != '.').collect();
+    linux_tkg_path.join(format!("linux{}-tkg-userpatches", basever))
 }
 
 pub fn list_patches(patch_dir: &Path) -> Vec<PatchEntry> {

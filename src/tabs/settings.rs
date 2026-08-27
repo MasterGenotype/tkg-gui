@@ -1,5 +1,5 @@
 use crate::core::repo_manager::{clone_linux_tkg, copy_linux_tkg, CloneMsg};
-use crate::settings::AppSettings;
+use crate::settings::{default_patch_repo, AppSettings};
 use egui::{Color32, Context, RichText, Ui};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
@@ -14,6 +14,9 @@ pub struct SettingsTab {
 
     // Install state
     install_status: String,
+
+    // Patch repository config state
+    repo_status: String,
 }
 
 impl SettingsTab {
@@ -38,8 +41,7 @@ impl SettingsTab {
                         if code == 0 {
                             self.clone_status = "Completed successfully.".to_string();
                         } else {
-                            self.clone_status =
-                                format!("Finished with exit code {}.", code);
+                            self.clone_status = format!("Finished with exit code {}.", code);
                         }
                         clone_done = true;
                         ctx.request_repaint();
@@ -81,10 +83,7 @@ impl SettingsTab {
                 // linux-tkg status in work dir
                 let is_ready = linux_tkg_path.join("customization.cfg").exists();
                 if is_ready {
-                    ui.label(
-                        RichText::new("✓ linux-tkg ready")
-                            .color(Color32::GREEN),
-                    );
+                    ui.label(RichText::new("✓ linux-tkg ready").color(Color32::GREEN));
                 } else {
                     ui.label(
                         RichText::new("✗ linux-tkg not found in work directory")
@@ -191,6 +190,59 @@ impl SettingsTab {
 
         ui.add_space(8.0);
 
+        // ── Patch Repository ─────────────────────────────────────────────────────
+        egui::CollapsingHeader::new("Patch Repository")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.label(
+                    "GitHub owner/repo browsed by the Patches tab. It must be laid out \
+                     like sirlucjan/kernel-patches: a top-level directory per kernel \
+                     series, each containing patchset subdirectories.",
+                );
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Repo:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut settings.patch_repo)
+                            .hint_text("owner/repo")
+                            .desired_width(260.0),
+                    );
+                });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("💾 Save").clicked() {
+                        self.repo_status = match settings.save() {
+                            Ok(()) => "Saved.".to_string(),
+                            Err(e) => format!("Error: {}", e),
+                        };
+                    }
+
+                    let default_repo = default_patch_repo();
+                    if ui
+                        .add_enabled(
+                            settings.patch_repo != default_repo,
+                            egui::Button::new("↩ Reset to Default"),
+                        )
+                        .on_hover_text(&default_repo)
+                        .clicked()
+                    {
+                        settings.patch_repo = default_repo;
+                        self.repo_status = match settings.save() {
+                            Ok(()) => "Reset to default.".to_string(),
+                            Err(e) => format!("Error: {}", e),
+                        };
+                    }
+
+                    if !self.repo_status.is_empty() {
+                        ui.label(&self.repo_status);
+                    }
+                });
+            });
+
+        ui.add_space(8.0);
+
         // ── Paths info ───────────────────────────────────────────────────────────
         egui::CollapsingHeader::new("App Directories")
             .default_open(false)
@@ -201,12 +253,11 @@ impl SettingsTab {
                 ));
                 ui.label(format!(
                     "Patch registry: {}",
-                    AppSettings::data_dir().join("patch_registry.json").display()
+                    AppSettings::data_dir()
+                        .join("patch_registry.json")
+                        .display()
                 ));
-                ui.label(format!(
-                    "Work directory: {}",
-                    work_dir_root.display()
-                ));
+                ui.label(format!("Work directory: {}", work_dir_root.display()));
             });
     }
 
@@ -236,8 +287,7 @@ impl SettingsTab {
         let exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(e) => {
-                self.install_status =
-                    format!("Could not determine current executable path: {}", e);
+                self.install_status = format!("Could not determine current executable path: {}", e);
                 return;
             }
         };
