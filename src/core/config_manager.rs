@@ -19,7 +19,11 @@ impl ConfigManager {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let re = Regex::new(r#"^(_\w+)\s*=\s*["']?([^"'#\n]*)["']?"#).unwrap();
+        // Match _foo=, CUSTOM_*, KCFLAGS, KCPPFLAGS (linux-tkg customization.cfg)
+        let re = Regex::new(
+            r#"^((?:_[A-Za-z0-9_]+)|(?:CUSTOM_[A-Za-z0-9_]+)|(?:KCFLAGS)|(?:KCPPFLAGS))\s*=\s*["']?([^"'#\n]*)["']?"#,
+        )
+        .unwrap();
 
         let lines: Vec<Line> = content
             .lines()
@@ -86,6 +90,11 @@ impl ConfigManager {
             }
         }
         map
+    }
+
+    #[allow(dead_code)]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn save(&self) -> Result<(), String> {

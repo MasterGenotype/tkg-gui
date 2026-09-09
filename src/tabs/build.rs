@@ -1,5 +1,6 @@
 use crate::core::build_manager::{self, BuildHandle, BuildMsg};
 use crate::core::config_manager::ConfigManager;
+use crate::core::fragment_manager::{self, FeaturePresets};
 use egui::{Context, RichText, Ui};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
@@ -243,11 +244,60 @@ impl BuildTab {
 
         // Detect distro from config to determine build command
         let config_path = work_dir.join("customization.cfg");
-        let use_makepkg = if let Ok(config) = ConfigManager::load(&config_path) {
-            config.get_option("_distro").unwrap_or_default() == "Arch"
+        let (use_makepkg, presets) = if let Ok(mut config) = ConfigManager::load(&config_path) {
+            let mut values = config.get_all_options();
+            let presets = FeaturePresets::from_map(&values);
+            // Ensure silent fragment apply when presets are enabled
+            if presets.xen_dom0 || presets.lvm_thin || presets.acpi_call {
+                presets.apply_to_map(&mut values);
+                for (k, v) in &values {
+                    config.set_option(k, v);
+                }
+                let _ = config.save();
+            }
+            let use_makepkg = config.get_option("_distro").unwrap_or_default() == "Arch";
+            (use_makepkg, presets)
         } else {
-            false
+            (false, FeaturePresets::default())
         };
+
+        match fragment_manager::sync_fragments(work_dir, &presets) {
+            Ok(actions) => {
+                for a in actions {
+                    self.log.push(LogLine {
+                        text: format!("==> Fragment: {}", a),
+                        level: LogLevel::Stage,
+                    });
+                }
+                if presets.xen_dom0 {
+                    self.log.push(LogLine {
+                        text: "==> Xen dom0 kernel options will be merged via tkg-gui-xen.myfrag"
+                            .into(),
+                        level: LogLevel::Stage,
+                    });
+                }
+                if presets.lvm_thin {
+                    self.log.push(LogLine {
+                        text: "==> LVM thin-provisioning options via tkg-gui-lvm-thin.myfrag"
+                            .into(),
+                        level: LogLevel::Stage,
+                    });
+                }
+                if presets.acpi_call {
+                    self.log.push(LogLine {
+                        text: "==> acpi_call helper: tkg-gui-acpi-call-install.sh (run after install)"
+                            .into(),
+                        level: LogLevel::Stage,
+                    });
+                }
+            }
+            Err(e) => {
+                self.log.push(LogLine {
+                    text: format!("Warning: fragment sync failed: {}", e),
+                    level: LogLevel::Warning,
+                });
+            }
+        }
 
         let cmd_name = if use_makepkg {
             "makepkg -si"

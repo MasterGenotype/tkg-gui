@@ -114,6 +114,27 @@ CatalogEntry {
 },
 ```
 
+
+## Automated kernel feature presets (tkg-gui)
+
+Config tab section **Automated Kernel Features (.myfrag)** writes linux-tkg
+fragments next to PKGBUILD when saved or when a build starts:
+
+| GUI toggle | Files written | Purpose |
+|------------|---------------|---------|
+| Xen dom0 / backend | `tkg-gui-xen.myfrag` | Force CONFIG_XEN* dom0/backend stack |
+| LVM thin-provisioning | `tkg-gui-lvm-thin.myfrag` | CONFIG_DM_THIN_PROVISIONING + DM deps |
+| acpi_call module | `tkg-gui-acpi-call.myfrag`, `tkg-gui-acpi-call-install.sh` | ACPI prereqs + DKMS/source helper |
+
+Enabling any preset sets `_config_fragments=true` and
+`_config_fragments_no_confirm=true` so `install.sh`/`makepkg` merge fragments
+without interactive prompts.
+
+GUI-only keys stored in `customization.cfg` (ignored by linux-tkg itself):
+`_tkg_gui_xen_dom0`, `_tkg_gui_lvm_thin`, `_tkg_gui_acpi_call`.
+
+Note: `_runqueue_sharing` is the correct linux-tkg key (not `_rqshare`).
+
 ## Config Options Reference
 
 The Config tab edits `submodules/linux-tkg/customization.cfg`. Key options include:
