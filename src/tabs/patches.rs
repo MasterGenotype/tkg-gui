@@ -29,6 +29,12 @@ pub struct PatchesTab {
     // Conflict scan against bundled linux-tkg patches
     conflicts: Vec<crate::core::patch_conflicts::PairReport>,
     conflict_status: String,
+    /// Two-step guard: the fix renames files, so it is never one stray click.
+    confirm_disable: bool,
+    autofix_on_build: bool,
+    /// Tree and series the findings came from, so the fix acts on the same ones.
+    last_scan_root: Option<std::path::PathBuf>,
+    last_scan_series: Option<String>,
 
     // Registry
     registry: PatchRegistry,
@@ -64,6 +70,10 @@ impl Default for PatchesTab {
             kernel_series: "6.13".to_string(),
             conflicts: Vec::new(),
             conflict_status: String::new(),
+            confirm_disable: false,
+            autofix_on_build: false,
+            last_scan_root: None,
+            last_scan_series: None,
             patches: Vec::new(),
             download_rx: None,
             status: String::new(),
@@ -114,6 +124,10 @@ impl PatchesTab {
         }
 
         self.conflicts = pc::group(&pc::scan(linux_tkg_path, &series, &cfg));
+        self.confirm_disable = false;
+        self.autofix_on_build = pc::autofix_enabled(&cfg);
+        self.last_scan_root = Some(linux_tkg_path.to_path_buf());
+        self.last_scan_series = Some(series.clone());
         let live = self.conflicts.iter().filter(|f| f.is_live()).count();
         self.conflict_status = if self.conflicts.is_empty() {
             format!("✓ No duplicate declarations found (series {series}).")
@@ -165,11 +179,116 @@ impl PatchesTab {
                     .monospace(),
             );
         }
-        if live > 0 {
-            ui.label(
-                egui::RichText::new("  Fix: delete the userpatch — linux-tkg already provides it.")
-                    .color(egui::Color32::YELLOW),
-            );
+        if live == 0 {
+            return;
+        }
+
+        ui.label(
+            egui::RichText::new(
+                "  Fix: linux-tkg already provides these, so the userpatch is the one to drop.",
+            )
+            .color(egui::Color32::YELLOW),
+        );
+
+        let names = crate::core::patch_conflicts::offending_user_patches(&self.conflicts, true);
+        ui.horizontal(|ui| {
+            if self.confirm_disable {
+                ui.label(
+                    egui::RichText::new(format!("Disable {} patch(es)?", names.len()))
+                        .color(egui::Color32::YELLOW),
+                );
+                if ui
+                    .button(egui::RichText::new("✔ Yes, disable").color(egui::Color32::GREEN))
+                    .clicked()
+                {
+                    self.apply_conflict_fix(&names);
+                }
+                if ui.button("✖ Cancel").clicked() {
+                    self.confirm_disable = false;
+                }
+            } else if ui
+                .button(format!("🛠 Auto-fix ({})", names.len()))
+                .on_hover_text(
+                    "Rename each conflicting userpatch to *.mypatch.disabled so linux-tkg stops \
+                     picking it up. Nothing is deleted — re-enable it from the list below, or \
+                     rename it back by hand.",
+                )
+                .clicked()
+            {
+                self.confirm_disable = true;
+            }
+
+            if ui
+                .checkbox(&mut self.autofix_on_build, "Auto-fix at build start")
+                .on_hover_text(
+                    "Saved to customization.cfg. When on, starting a build disables conflicting \
+                     userpatches itself instead of only warning.",
+                )
+                .changed()
+            {
+                self.persist_autofix();
+            }
+        });
+    }
+
+    /// Persist the auto-fix toggle into `customization.cfg`, which is how the
+    /// Build tab (separate state) learns about it.
+    fn persist_autofix(&mut self) {
+        use crate::core::patch_conflicts::AUTOFIX_KEY;
+
+        let Some(root) = self.last_scan_root.clone() else {
+            return;
+        };
+        match crate::core::config_manager::ConfigManager::load(root.join("customization.cfg")) {
+            Ok(mut c) => {
+                c.set_option(
+                    AUTOFIX_KEY,
+                    if self.autofix_on_build {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                if let Err(e) = c.save() {
+                    self.conflict_status = format!("Could not save {AUTOFIX_KEY}: {e}");
+                }
+            }
+            Err(e) => self.conflict_status = format!("Could not read customization.cfg: {e}"),
+        }
+    }
+
+    /// Disable the listed userpatches, then re-scan so the panel reflects what is
+    /// on disk rather than the pre-fix state.
+    fn apply_conflict_fix(&mut self, names: &[String]) {
+        use crate::core::patch_conflicts as pc;
+
+        self.confirm_disable = false;
+        let (Some(root), Some(series)) =
+            (self.last_scan_root.clone(), self.last_scan_series.clone())
+        else {
+            self.conflict_status = "Run Check Conflicts first.".into();
+            return;
+        };
+
+        let results = pc::disable_user_patches(&root, &series, names);
+        let done = results
+            .iter()
+            .filter(|r| r.disabled_name().is_some())
+            .count();
+        let problems: Vec<String> = results
+            .iter()
+            .filter(|r| r.is_failure())
+            .map(|r| r.summary())
+            .collect();
+
+        // Re-scan and refresh the list: what is on disk now is the only truth.
+        self.check_conflicts(&root);
+        self.refresh_patches(&root);
+
+        self.conflict_status = if problems.is_empty() {
+            format!("Disabled {done}. {}", self.conflict_status)
+        } else {
+            format!("Disabled {done}, but: {}", problems.join("; "))
         }
     }
 

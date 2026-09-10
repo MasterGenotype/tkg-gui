@@ -158,12 +158,34 @@ only applies at `_compileroptlevel=2`, `0001-bore.patch` only at
 `0012-linux-hardened.patch` when `_configfile=config_hardened.x86_64` **and**
 `_cpusched=cfs`. An unrecognised bundled patch is `Unknown`, never asserted.
 
-Surfaced in two places: the Build tab logs findings before starting a build
-(warning only — it never blocks, since a duplicate could be deliberate), and the
-Patches tab has a **🔍 Check Conflicts** button to run the scan on demand.
+Surfaced in two places: the Build tab logs findings before starting a build, and
+the Patches tab has a **🔍 Check Conflicts** button to run the scan on demand.
 
 Userpatches apply *after* every bundled patch (`prepare:1825`), so the duplicate
-is always the userpatch — and deleting it is the fix.
+is always the userpatch — and dropping it is the fix.
+
+### Auto-fix
+
+`disable_user_patches()` renames each offending userpatch to `*.mypatch.disabled`,
+which linux-tkg's `*.mypatch` glob no longer matches and `scan` skips. Renaming,
+not deleting: it is the same mechanism as the per-patch toggle, it is undoable,
+and a curated patch set is not ours to destroy.
+
+Rails, all covered by tests:
+- only the **userpatch** side is ever touched, never the bundled patch;
+- only **live** findings by default — a latent collision is not acted on;
+- an existing `*.disabled` is never overwritten;
+- names containing `/`, `\` or `..` are refused rather than followed;
+- a re-scan runs straight after, so the UI shows what is on disk, not what was.
+
+Two entry points:
+- **Patches tab → Auto-fix** — two-click (button, then confirm), since it
+  renames files.
+- **`_tkg_gui_autofix_conflicts="true"`** in `customization.cfg`, set by the
+  *Auto-fix at build start* checkbox. When on, a build disables conflicting
+  userpatches itself and logs each rename. **Off by default** — renaming
+  someone's patches out from under a build they just asked for should never be a
+  surprise.
 
 To validate against a live tree:
 

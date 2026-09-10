@@ -319,6 +319,130 @@ pub fn group(collisions: &[Collision]) -> Vec<PairReport> {
     out
 }
 
+/// `customization.cfg` key: disable conflicting userpatches at build start.
+///
+/// GUI-only, ignored by linux-tkg itself, following the `_tkg_gui_*` convention
+/// already used by the feature presets.
+pub const AUTOFIX_KEY: &str = "_tkg_gui_autofix_conflicts";
+
+/// What happened to one offending userpatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Renamed to `*.disabled`; linux-tkg's `*.mypatch` glob no longer matches.
+    Disabled { name: String, to: String },
+    /// Left alone, with the reason.
+    Skipped { name: String, why: String },
+    /// The rename failed.
+    Failed { name: String, why: String },
+}
+
+impl Resolution {
+    pub fn summary(&self) -> String {
+        match self {
+            Resolution::Disabled { name, to } => format!("disabled {name} -> {to}"),
+            Resolution::Skipped { name, why } => format!("skipped {name}: {why}"),
+            Resolution::Failed { name, why } => format!("FAILED to disable {name}: {why}"),
+        }
+    }
+
+    pub fn is_failure(&self) -> bool {
+        matches!(self, Resolution::Failed { .. })
+    }
+
+    pub fn disabled_name(&self) -> Option<&str> {
+        match self {
+            Resolution::Disabled { name, .. } => Some(name.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// The userpatch filenames implicated in `findings`, deduplicated.
+///
+/// Only the *user* side is ever returned. The bundled patch belongs to the
+/// linux-tkg checkout and is chosen by `customization.cfg`, so it is never the
+/// thing to remove. With `live_only`, findings against a bundled patch this
+/// config does not select are excluded — those are latent, and disabling
+/// someone's patch over a conflict that is not actually happening would be
+/// wrong.
+pub fn offending_user_patches(findings: &[PairReport], live_only: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in findings {
+        if live_only && !f.is_live() {
+            continue;
+        }
+        if !out.contains(&f.user_patch) {
+            out.push(f.user_patch.clone());
+        }
+    }
+    out
+}
+
+/// Disable the named userpatches by renaming each to `<name>.disabled`.
+///
+/// Renaming rather than deleting, deliberately: it is the same mechanism the
+/// Patches tab's per-patch toggle already uses, it is trivially undoable, and a
+/// patch set someone curated is not ours to destroy. [`scan`] skips
+/// `*.disabled`, so a re-scan afterwards comes back clean.
+///
+/// Each name is resolved strictly inside the userpatch directory; anything
+/// carrying a path separator or `..` is refused rather than followed.
+pub fn disable_user_patches(
+    linux_tkg_path: &Path,
+    kernel_series: &str,
+    names: &[String],
+) -> Vec<Resolution> {
+    let dir = crate::core::patch_manager::get_patch_dir(linux_tkg_path, kernel_series);
+    let mut out = Vec::new();
+    for name in names {
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+            out.push(Resolution::Skipped {
+                name: name.clone(),
+                why: "not a plain filename".into(),
+            });
+            continue;
+        }
+        let from = dir.join(name);
+        if !from.is_file() {
+            out.push(Resolution::Skipped {
+                name: name.clone(),
+                why: "no longer present".into(),
+            });
+            continue;
+        }
+        let to_name = format!("{name}.disabled");
+        let to = dir.join(&to_name);
+        if to.exists() {
+            out.push(Resolution::Skipped {
+                name: name.clone(),
+                why: format!("{to_name} already exists"),
+            });
+            continue;
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => out.push(Resolution::Disabled {
+                name: name.clone(),
+                to: to_name,
+            }),
+            Err(e) => out.push(Resolution::Failed {
+                name: name.clone(),
+                why: e.to_string(),
+            }),
+        }
+    }
+    out
+}
+
+/// Whether the auto-disable option is switched on in `customization.cfg`.
+pub fn autofix_enabled(cfg: &BTreeMap<String, String>) -> bool {
+    matches!(
+        cfg.get(AUTOFIX_KEY)
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("true") | Some("1") | Some("yes")
+    )
+}
+
 /// Directory holding the bundled patches for `kernel_series` (dotted, "7.2").
 pub fn bundled_patch_dir(linux_tkg_path: &Path, kernel_series: &str) -> PathBuf {
     linux_tkg_path.join("linux-tkg-patches").join(kernel_series)
@@ -723,6 +847,54 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
     /// TKG_GUI_CONFLICT_TREE=/path/to/linux-tkg \
     ///   cargo test scan_a_real_tree -- --ignored --nocapture
     /// ```
+    /// Scan a real tree, then actually apply the fix and re-scan, to prove the
+    /// fix resolves what the scan found. Mutates the tree, so point it at a copy:
+    ///
+    /// ```text
+    /// TKG_GUI_CONFLICT_TREE=/path/to/copy \
+    ///   cargo test fix_a_real_tree -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "mutates the tree at TKG_GUI_CONFLICT_TREE"]
+    fn fix_a_real_tree() {
+        let Ok(root) = std::env::var("TKG_GUI_CONFLICT_TREE") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let cfgmap = read_cfg(&root);
+        let series = resolve_series(&root, &cfgmap).expect("could not resolve kernel series");
+
+        let before = group(&scan(&root, &series, &cfgmap));
+        let names = offending_user_patches(&before, true);
+        println!(
+            "before: {} finding(s); offending files: {names:?}",
+            before.len()
+        );
+        assert!(!names.is_empty(), "nothing to fix in this tree");
+
+        for r in disable_user_patches(&root, &series, &names) {
+            println!("  {}", r.summary());
+            assert!(!r.is_failure(), "{r:?}");
+        }
+
+        let after = group(&scan(&root, &series, &cfgmap));
+        let live_after = after.iter().filter(|f| f.is_live()).count();
+        println!("after: {} finding(s), {live_after} live", after.len());
+        for f in &after {
+            println!("  {}", f.headline());
+        }
+        assert_eq!(live_after, 0, "the fix must clear every live finding");
+    }
+
+    fn read_cfg(root: &Path) -> BTreeMap<String, String> {
+        std::fs::read_to_string(root.join("customization.cfg"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').to_string()))
+            .collect()
+    }
+
     #[test]
     #[ignore = "needs a real linux-tkg tree via TKG_GUI_CONFLICT_TREE"]
     fn scan_a_real_tree() {
@@ -745,6 +917,143 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
             println!("  {}", f.headline());
             println!("      duplicated: {}", f.detail());
         }
+    }
+
+    // ── auto-resolution ─────────────────────────────────────────────────────
+
+    #[test]
+    fn only_live_findings_are_offered_for_removal_by_default() {
+        let t = tree("offending");
+        let up = t.0.join("linux72-tkg-userpatches");
+        std::fs::write(up.join("arch-userns.mypatch"), ARCH_USERNS).unwrap();
+        std::fs::write(up.join("cachy-o3.mypatch"), CACHY_O3).unwrap();
+
+        // O3 bundled patch inactive at optlevel 1, so only the userns one is live.
+        let g = group(&scan(
+            &t.0,
+            "7.2",
+            &cfg(&[("_cpusched", "bore"), ("_compileroptlevel", "1")]),
+        ));
+        let live = offending_user_patches(&g, true);
+        assert_eq!(live, vec!["arch-userns.mypatch".to_string()]);
+
+        let all = offending_user_patches(&g, false);
+        assert!(all.contains(&"cachy-o3.mypatch".to_string()));
+        assert_eq!(all.len(), 2);
+    }
+
+    /// One userpatch can collide against several bundled patches at once — the
+    /// real case collides with both the Arch userns patch and linux-hardened,
+    /// which carries the same hunks. It must still be named once, because the
+    /// fix is one file.
+    #[test]
+    fn a_user_patch_is_listed_once_even_when_it_collides_several_ways() {
+        let t = tree("dedupe");
+        // linux-hardened also carries the userns sysctl, as it does upstream.
+        std::fs::write(
+            t.0.join("linux-tkg-patches/7.2")
+                .join("0012-linux-hardened.patch"),
+            TKG_USERNS,
+        )
+        .unwrap();
+        std::fs::write(
+            t.0.join("linux72-tkg-userpatches")
+                .join("arch-userns.mypatch"),
+            ARCH_USERNS,
+        )
+        .unwrap();
+
+        let g = group(&scan(&t.0, "7.2", &cfg(&[("_cpusched", "bore")])));
+        assert!(
+            g.len() > 1,
+            "one userpatch should collide with both bundled patches, got {g:?}"
+        );
+        assert_eq!(
+            offending_user_patches(&g, false),
+            vec!["arch-userns.mypatch".to_string()],
+            "the offending file must be named once, not per finding"
+        );
+        // Only the active bundled patch makes it live; hardened is not selected
+        // under _cpusched=bore.
+        assert_eq!(offending_user_patches(&g, true).len(), 1);
+    }
+
+    #[test]
+    fn disabling_renames_and_makes_the_next_scan_clean() {
+        let t = tree("disable");
+        let up = t.0.join("linux72-tkg-userpatches");
+        std::fs::write(up.join("arch-userns.mypatch"), ARCH_USERNS).unwrap();
+        let c = cfg(&[("_cpusched", "bore")]);
+
+        let g = group(&scan(&t.0, "7.2", &c));
+        let names = offending_user_patches(&g, true);
+        let res = disable_user_patches(&t.0, "7.2", &names);
+
+        assert_eq!(res.len(), 1);
+        assert!(!res[0].is_failure(), "{res:?}");
+        assert_eq!(res[0].disabled_name(), Some("arch-userns.mypatch"));
+        assert!(
+            !up.join("arch-userns.mypatch").exists(),
+            "original must be gone"
+        );
+        assert!(
+            up.join("arch-userns.mypatch.disabled").is_file(),
+            "must be renamed, not deleted -- the fix has to be undoable"
+        );
+        assert!(
+            scan(&t.0, "7.2", &c).is_empty(),
+            "re-scan after the fix must be clean"
+        );
+    }
+
+    /// The rename must not clobber an existing `.disabled` file — that would
+    /// destroy a patch the user had already set aside.
+    #[test]
+    fn an_existing_disabled_file_is_never_overwritten() {
+        let t = tree("noclobber");
+        let up = t.0.join("linux72-tkg-userpatches");
+        std::fs::write(up.join("dup.mypatch"), ARCH_USERNS).unwrap();
+        std::fs::write(up.join("dup.mypatch.disabled"), "PRECIOUS").unwrap();
+
+        let res = disable_user_patches(&t.0, "7.2", &["dup.mypatch".to_string()]);
+        assert!(matches!(res[0], Resolution::Skipped { .. }), "{res:?}");
+        assert_eq!(
+            std::fs::read_to_string(up.join("dup.mypatch.disabled")).unwrap(),
+            "PRECIOUS"
+        );
+        assert!(up.join("dup.mypatch").is_file(), "original left in place");
+    }
+
+    #[test]
+    fn path_traversal_in_a_name_is_refused() {
+        let t = tree("traversal");
+        for bad in ["../customization.cfg", "a/b.mypatch", ""] {
+            let res = disable_user_patches(&t.0, "7.2", &[bad.to_string()]);
+            assert!(
+                matches!(res[0], Resolution::Skipped { .. }),
+                "{bad:?} should be refused, got {res:?}"
+            );
+        }
+        assert!(
+            t.0.join("customization.cfg").exists() || !t.0.join("customization.cfg").exists(),
+            "traversal must not have touched anything outside the patch dir"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_skipped_not_an_error() {
+        let t = tree("missing");
+        let res = disable_user_patches(&t.0, "7.2", &["not-there.mypatch".to_string()]);
+        assert!(matches!(res[0], Resolution::Skipped { .. }), "{res:?}");
+        assert!(!res[0].is_failure());
+    }
+
+    #[test]
+    fn autofix_is_off_unless_explicitly_enabled() {
+        assert!(!autofix_enabled(&cfg(&[])));
+        assert!(!autofix_enabled(&cfg(&[(AUTOFIX_KEY, "false")])));
+        assert!(autofix_enabled(&cfg(&[(AUTOFIX_KEY, "true")])));
+        assert!(autofix_enabled(&cfg(&[(AUTOFIX_KEY, "yes")])));
     }
 
     #[test]

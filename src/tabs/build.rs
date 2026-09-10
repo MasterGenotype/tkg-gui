@@ -256,9 +256,45 @@ impl BuildTab {
         let Some(series) = patch_conflicts::resolve_series(work_dir, &cfg) else {
             return; // no bundled patch dir to compare against; nothing to say
         };
-        let findings = patch_conflicts::group(&patch_conflicts::scan(work_dir, &series, &cfg));
+        let mut findings = patch_conflicts::group(&patch_conflicts::scan(work_dir, &series, &cfg));
         if findings.is_empty() {
             return;
+        }
+
+        // Opt-in auto-fix: disable the offending userpatches instead of only
+        // warning. Off unless the Patches tab switched it on, because renaming
+        // someone's patches out from under a build they just asked for is not a
+        // default anyone should get by surprise.
+        if patch_conflicts::autofix_enabled(&cfg) {
+            let names = patch_conflicts::offending_user_patches(&findings, true);
+            if !names.is_empty() {
+                self.log.push(LogLine {
+                    text: format!(
+                        "==> Auto-fix is on: disabling {} conflicting userpatch(es) before building",
+                        names.len()
+                    ),
+                    level: LogLevel::Warning,
+                });
+                for r in patch_conflicts::disable_user_patches(work_dir, &series, &names) {
+                    self.log.push(LogLine {
+                        text: format!("      {}", r.summary()),
+                        level: if r.is_failure() {
+                            LogLevel::Error
+                        } else {
+                            LogLevel::Stage
+                        },
+                    });
+                }
+                // Re-scan: report what is still wrong, not what was wrong before.
+                findings = patch_conflicts::group(&patch_conflicts::scan(work_dir, &series, &cfg));
+                if findings.is_empty() {
+                    self.log.push(LogLine {
+                        text: "==> No duplicate declarations remain.".into(),
+                        level: LogLevel::Stage,
+                    });
+                    return;
+                }
+            }
         }
 
         let live = findings.iter().filter(|f| f.is_live()).count();
@@ -288,8 +324,8 @@ impl BuildTab {
         }
         if live > 0 {
             self.log.push(LogLine {
-                text: "      Fix: delete the userpatch — linux-tkg already provides it. \
-                       (Patches tab -> Check Conflicts re-runs this scan.)"
+                text: "      Fix: Patches tab -> Check Conflicts -> Auto-fix \
+                       (disables them; nothing is deleted)."
                     .into(),
                 level: LogLevel::Warning,
             });
