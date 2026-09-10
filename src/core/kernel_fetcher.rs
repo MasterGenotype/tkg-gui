@@ -4,8 +4,7 @@ use scraper::{Html, Selector};
 
 const KERNEL_TAGS_URL: &str =
     "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/refs/tags";
-const KERNEL_BASE_URL: &str =
-    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git";
+const KERNEL_BASE_URL: &str = "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git";
 
 #[derive(Clone, Debug)]
 pub struct VersionInfo {
@@ -60,9 +59,10 @@ fn fetch_tags_inner() -> Result<Vec<VersionInfo>, String> {
             let text = link.text().collect::<String>();
             if version_re.is_match(&text) {
                 // Try to find date in this row
-                let date = row.select(&date_selector).next().map(|el| {
-                    el.text().collect::<String>().trim().to_string()
-                });
+                let date = row
+                    .select(&date_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>().trim().to_string());
                 versions.push(VersionInfo {
                     version: text,
                     date,
@@ -94,7 +94,10 @@ fn fetch_shortlog_inner(from_version: &str, to_version: &str) -> Result<Vec<Comm
         KERNEL_BASE_URL, to_version, from_version
     );
 
-    let response = http_client::agent().get(&url).call().map_err(|e| e.to_string())?;
+    let response = http_client::agent()
+        .get(&url)
+        .call()
+        .map_err(|e| e.to_string())?;
     let body = response.into_string().map_err(|e| e.to_string())?;
     let document = Html::parse_document(&body);
 
@@ -104,19 +107,19 @@ fn fetch_shortlog_inner(from_version: &str, to_version: &str) -> Result<Vec<Comm
     let row_selector = Selector::parse("table.list tr").map_err(|e| format!("{:?}", e))?;
     let link_selector = Selector::parse("td:nth-child(2) a").map_err(|e| format!("{:?}", e))?;
     let author_selector = Selector::parse("td:nth-child(3)").map_err(|e| format!("{:?}", e))?;
-    
+
     let mut commits: Vec<CommitInfo> = Vec::new();
 
     for row in document.select(&row_selector) {
         // Skip header row (contains <th> not <td>)
         if let Some(subject_el) = row.select(&link_selector).next() {
             let subject = subject_el.text().collect::<String>().trim().to_string();
-            
+
             // Skip empty subjects (header row)
             if subject.is_empty() {
                 continue;
             }
-            
+
             // Extract commit hash from href: .../commit/?id=HASH
             let hash = subject_el
                 .value()
@@ -124,7 +127,7 @@ fn fetch_shortlog_inner(from_version: &str, to_version: &str) -> Result<Vec<Comm
                 .and_then(|href| href.split("id=").nth(1))
                 .map(|h| h.chars().take(12).collect())
                 .unwrap_or_default();
-            
+
             let author = row
                 .select(&author_selector)
                 .next()
@@ -145,14 +148,14 @@ fn fetch_shortlog_inner(from_version: &str, to_version: &str) -> Result<Vec<Comm
 /// Get the previous version in the same series (e.g., v6.13.1 -> v6.13)
 pub fn get_previous_version(version: &str, all_versions: &[VersionInfo]) -> Option<String> {
     let idx = all_versions.iter().position(|v| v.version == version)?;
-    
+
     // Get major.minor of current version
     let current_parts: Vec<&str> = version.trim_start_matches('v').split('.').collect();
     if current_parts.len() < 2 {
         return None;
     }
     let current_major_minor = format!("{}.{}", current_parts[0], current_parts[1]);
-    
+
     // Look for previous version in same series
     for v in all_versions.iter().skip(idx + 1) {
         let parts: Vec<&str> = v.version.trim_start_matches('v').split('.').collect();
@@ -163,7 +166,7 @@ pub fn get_previous_version(version: &str, all_versions: &[VersionInfo]) -> Opti
             }
         }
     }
-    
+
     // If no previous in same series, return the base version (e.g., v6.13)
     if current_parts.len() > 2 {
         let base = format!("v{}.{}", current_parts[0], current_parts[1]);
@@ -171,7 +174,7 @@ pub fn get_previous_version(version: &str, all_versions: &[VersionInfo]) -> Opti
             return Some(base);
         }
     }
-    
+
     None
 }
 

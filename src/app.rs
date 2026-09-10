@@ -121,19 +121,17 @@ impl eframe::App for TkgApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                Tab::Kernel => self.kernel_tab.ui(ui, ctx, &kernel_sources_dir),
-                Tab::Config => self.config_tab.ui(ui, &linux_tkg_path),
-                Tab::Patches => {
-                    self.patches_tab.set_patch_repo(&self.settings.patch_repo);
-                    self.patches_tab.ui(ui, ctx, &linux_tkg_path, &data_dir);
-                }
-                Tab::Build => self.build_tab.ui(ui, ctx, &linux_tkg_path),
-                Tab::Settings => {
-                    self.settings_tab
-                        .ui(ui, ctx, &mut self.settings, &work_dir_root, &linux_tkg_path);
-                }
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
+            Tab::Kernel => self.kernel_tab.ui(ui, ctx, &kernel_sources_dir),
+            Tab::Config => self.config_tab.ui(ui, &linux_tkg_path),
+            Tab::Patches => {
+                self.patches_tab.set_patch_repo(&self.settings.patch_repo);
+                self.patches_tab.ui(ui, ctx, &linux_tkg_path, &data_dir);
+            }
+            Tab::Build => self.build_tab.ui(ui, ctx, &linux_tkg_path),
+            Tab::Settings => {
+                self.settings_tab
+                    .ui(ui, ctx, &mut self.settings, &work_dir_root, &linux_tkg_path);
             }
         });
     }

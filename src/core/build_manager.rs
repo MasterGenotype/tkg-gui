@@ -118,5 +118,7 @@ pub fn start_build(work_dir: PathBuf, tx: Sender<BuildMsg>, use_makepkg: bool) -
         }
     });
 
-    BuildHandle { stdin: stdin_handle }
+    BuildHandle {
+        stdin: stdin_handle,
+    }
 }

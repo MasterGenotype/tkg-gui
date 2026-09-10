@@ -30,15 +30,9 @@ impl FeaturePresets {
     }
 
     pub fn apply_to_map(&self, values: &mut std::collections::HashMap<String, String>) {
-        values.insert(
-            "_tkg_gui_xen_dom0".into(),
-            bool_str(self.xen_dom0).into(),
-        );
+        values.insert("_tkg_gui_xen_dom0".into(), bool_str(self.xen_dom0).into());
         values.insert("_tkg_gui_lvm_thin".into(), bool_str(self.lvm_thin).into());
-        values.insert(
-            "_tkg_gui_acpi_call".into(),
-            bool_str(self.acpi_call).into(),
-        );
+        values.insert("_tkg_gui_acpi_call".into(), bool_str(self.acpi_call).into());
         // Auto-enable silent fragment apply so builds don't hang on prompts
         if self.xen_dom0 || self.lvm_thin || self.acpi_call {
             values.insert("_config_fragments".into(), "true".into());
@@ -63,7 +57,10 @@ fn bool_str(v: bool) -> &'static str {
 }
 
 /// Sync `.myfrag` files (and helpers) into the linux-tkg work directory.
-pub fn sync_fragments(linux_tkg_path: &Path, presets: &FeaturePresets) -> Result<Vec<String>, String> {
+pub fn sync_fragments(
+    linux_tkg_path: &Path,
+    presets: &FeaturePresets,
+) -> Result<Vec<String>, String> {
     let mut actions = Vec::new();
 
     set_fragment(

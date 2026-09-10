@@ -1,9 +1,9 @@
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
-use std::path::Path;
 
 pub enum CloneMsg {
     Line(String),
@@ -78,10 +78,7 @@ pub fn clone_linux_tkg(dest: PathBuf, tx: Sender<CloneMsg>) {
                 }
             }
             Err(e) => {
-                let _ = tx.send(CloneMsg::SpawnError(format!(
-                    "Failed to spawn git: {}",
-                    e
-                )));
+                let _ = tx.send(CloneMsg::SpawnError(format!("Failed to spawn git: {}", e)));
             }
         }
     });

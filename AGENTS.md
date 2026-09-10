@@ -135,6 +135,43 @@ GUI-only keys stored in `customization.cfg` (ignored by linux-tkg itself):
 
 Note: `_runqueue_sharing` is the correct linux-tkg key (not `_rqshare`).
 
+## Userpatch conflict detection
+
+`src/core/patch_conflicts.rs` compares enabled `*.mypatch` files in
+`linux<ver>-tkg-userpatches/` against the bundled patches in
+`linux-tkg-patches/<ver>/`, looking for declarations that can only exist once:
+
+| Class | Detected from | Symptom when duplicated |
+|-------|---------------|-------------------------|
+| Kconfig symbol | `+config NAME` | duplicate symbol, doubled menu entry |
+| sysctl procname | `+ .procname = "name"` | duplicate sysctl registration |
+| file-scope definition | `+int name =` at **column 0** | redefinition / static-vs-extern |
+
+Column 0 matters: indented declarations are locals and are ignored, which is
+what keeps a 199-patch series from producing constant false positives.
+
+Each finding records whether the bundled patch is actually selected by
+`customization.cfg` (`Applicability::{Applied, NotApplied, Unknown}`), mirroring
+the conditions in `linux-tkg-config/prepare` — e.g. `0013-optimize_harder_O3.patch`
+only applies at `_compileroptlevel=2`, `0001-bore.patch` only at
+`_cpusched=bore`, and `0001-add-sysctl-to-disallow-...` is replaced by
+`0012-linux-hardened.patch` when `_configfile=config_hardened.x86_64` **and**
+`_cpusched=cfs`. An unrecognised bundled patch is `Unknown`, never asserted.
+
+Surfaced in two places: the Build tab logs findings before starting a build
+(warning only — it never blocks, since a duplicate could be deliberate), and the
+Patches tab has a **🔍 Check Conflicts** button to run the scan on demand.
+
+Userpatches apply *after* every bundled patch (`prepare:1825`), so the duplicate
+is always the userpatch — and deleting it is the fix.
+
+To validate against a live tree:
+
+```bash
+TKG_GUI_CONFLICT_TREE=/path/to/linux-tkg \
+  cargo test scan_a_real_tree -- --ignored --nocapture
+```
+
 ## Config Options Reference
 
 The Config tab edits `submodules/linux-tkg/customization.cfg`. Key options include:

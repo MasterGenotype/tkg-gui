@@ -26,6 +26,10 @@ pub struct PatchesTab {
     status: String,
     last_url: String,
 
+    // Conflict scan against bundled linux-tkg patches
+    conflicts: Vec<crate::core::patch_conflicts::PairReport>,
+    conflict_status: String,
+
     // Registry
     registry: PatchRegistry,
     update_rx: Option<Receiver<UpdateCheckResult>>,
@@ -58,6 +62,8 @@ impl Default for PatchesTab {
             url_input: String::new(),
             filename_input: String::new(),
             kernel_series: "6.13".to_string(),
+            conflicts: Vec::new(),
+            conflict_status: String::new(),
             patches: Vec::new(),
             download_rx: None,
             status: String::new(),
@@ -79,6 +85,94 @@ impl Default for PatchesTab {
 }
 
 impl PatchesTab {
+    /// Scan the userpatch directory for patches that duplicate a bundled
+    /// linux-tkg patch, reading the gating keys from `customization.cfg` so the
+    /// result says which collisions are live for the current settings.
+    fn check_conflicts(&mut self, linux_tkg_path: &std::path::Path) {
+        use crate::core::patch_conflicts as pc;
+
+        let cfg: std::collections::BTreeMap<String, String> =
+            match crate::core::config_manager::ConfigManager::load(
+                linux_tkg_path.join("customization.cfg"),
+            ) {
+                Ok(c) => c.get_all_options().into_iter().collect(),
+                Err(_) => Default::default(),
+            };
+
+        // Prefer the series the config names; fall back to the field above it,
+        // so the button still works on a tree with no customization.cfg yet.
+        let series =
+            pc::resolve_series(linux_tkg_path, &cfg).unwrap_or_else(|| self.kernel_series.clone());
+
+        if !pc::bundled_patch_dir(linux_tkg_path, &series).is_dir() {
+            self.conflicts.clear();
+            self.conflict_status = format!(
+                "No bundled patches found for series {series} \
+                 (linux-tkg-patches/{series} is missing) — nothing to compare against."
+            );
+            return;
+        }
+
+        self.conflicts = pc::group(&pc::scan(linux_tkg_path, &series, &cfg));
+        let live = self.conflicts.iter().filter(|f| f.is_live()).count();
+        self.conflict_status = if self.conflicts.is_empty() {
+            format!("✓ No duplicate declarations found (series {series}).")
+        } else if live == 0 {
+            format!(
+                "{} latent duplicate(s) in series {series} — none active for the current config.",
+                self.conflicts.len()
+            )
+        } else {
+            format!(
+                "{live} duplicate(s) WILL break this build (series {series}); \
+                 {} latent.",
+                self.conflicts.len() - live
+            )
+        };
+    }
+
+    /// Render the last conflict scan, live findings first.
+    fn conflicts_ui(&mut self, ui: &mut Ui) {
+        if self.conflict_status.is_empty() {
+            return;
+        }
+        let live = self.conflicts.iter().filter(|f| f.is_live()).count();
+        let colour = if live > 0 {
+            egui::Color32::from_rgb(255, 120, 100)
+        } else if self.conflicts.is_empty() {
+            egui::Color32::LIGHT_GREEN
+        } else {
+            egui::Color32::YELLOW
+        };
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(&self.conflict_status).color(colour));
+
+        for f in &self.conflicts {
+            let (marker, c) = if f.is_live() {
+                ("✗", egui::Color32::from_rgb(255, 120, 100))
+            } else {
+                ("•", egui::Color32::GRAY)
+            };
+            ui.label(
+                egui::RichText::new(format!("  {marker} {}", f.headline()))
+                    .color(c)
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(format!("      duplicated: {}", f.detail()))
+                    .small()
+                    .weak()
+                    .monospace(),
+            );
+        }
+        if live > 0 {
+            ui.label(
+                egui::RichText::new("  Fix: delete the userpatch — linux-tkg already provides it.")
+                    .color(egui::Color32::YELLOW),
+            );
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut Ui, ctx: &Context, linux_tkg_path: &Path, data_dir: &Path) {
         // Reload registry if data_dir changed
         if self.last_data_dir.as_deref() != Some(data_dir) {
@@ -210,7 +304,20 @@ impl PatchesTab {
         ui.horizontal(|ui| {
             ui.label("Kernel Series:");
             ui.add(egui::TextEdit::singleline(&mut self.kernel_series).desired_width(60.0));
+            if ui
+                .button("🔍 Check Conflicts")
+                .on_hover_text(
+                    "Find userpatches that re-declare something a bundled linux-tkg patch \
+                     already adds (duplicate Kconfig symbol, sysctl, or definition). \
+                     These apply cleanly and then break the compile.",
+                )
+                .clicked()
+            {
+                self.check_conflicts(linux_tkg_path);
+            }
         });
+
+        self.conflicts_ui(ui);
 
         ui.add_space(8.0);
 

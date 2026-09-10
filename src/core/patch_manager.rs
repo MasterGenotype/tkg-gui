@@ -106,54 +106,67 @@ fn download_patch_inner(url: &str, dest_path: &Path) -> Result<DownloadInfo, Str
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let response = http_client::agent().get(url).call().map_err(|e| e.to_string())?;
-    
+    let response = http_client::agent()
+        .get(url)
+        .call()
+        .map_err(|e| e.to_string())?;
+
     // Capture HTTP headers for update tracking
     let etag = response.header("ETag").map(|s| s.to_string());
     let last_modified = response.header("Last-Modified").map(|s| s.to_string());
-    
+
     let mut reader = response.into_reader();
 
     // Check if file needs decompression based on extension
     let dest_str = dest_path.to_string_lossy();
-    
+
     let (final_path, content) = if dest_str.ends_with(".xz") {
         // Decompress XZ and save without .xz extension
         let final_path = PathBuf::from(dest_str.trim_end_matches(".xz"));
         let mut compressed_data = Vec::new();
-        reader.read_to_end(&mut compressed_data).map_err(|e| e.to_string())?;
-        
+        reader
+            .read_to_end(&mut compressed_data)
+            .map_err(|e| e.to_string())?;
+
         let mut decoder = XzDecoder::new(&compressed_data[..]);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).map_err(|e| format!("XZ decompression failed: {}", e))?;
-        
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| format!("XZ decompression failed: {}", e))?;
+
         (final_path, decompressed)
     } else if dest_str.ends_with(".gz") {
         // Decompress GZ and save without .gz extension
         let final_path = PathBuf::from(dest_str.trim_end_matches(".gz"));
         let mut compressed_data = Vec::new();
-        reader.read_to_end(&mut compressed_data).map_err(|e| e.to_string())?;
-        
+        reader
+            .read_to_end(&mut compressed_data)
+            .map_err(|e| e.to_string())?;
+
         let mut decoder = GzDecoder::new(&compressed_data[..]);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).map_err(|e| format!("GZ decompression failed: {}", e))?;
-        
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(|e| format!("GZ decompression failed: {}", e))?;
+
         (final_path, decompressed)
     } else {
         // No compression, read directly
         let mut content = Vec::new();
-        reader.read_to_end(&mut content).map_err(|e| e.to_string())?;
+        reader
+            .read_to_end(&mut content)
+            .map_err(|e| e.to_string())?;
         (dest_path.to_path_buf(), content)
     };
-    
+
     // Compute SHA-256 hash
     let mut hasher = Sha256::new();
     hasher.update(&content);
     let sha256 = format!("{:x}", hasher.finalize());
-    
+
     // Write file
     fs::write(&final_path, &content).map_err(|e| e.to_string())?;
-    
+
     Ok(DownloadInfo {
         path: final_path,
         sha256,
@@ -163,8 +176,5 @@ fn download_patch_inner(url: &str, dest_path: &Path) -> Result<DownloadInfo, Str
 }
 
 pub fn extract_filename_from_url(url: &str) -> String {
-    url.rsplit('/')
-        .next()
-        .unwrap_or("patch.patch")
-        .to_string()
+    url.rsplit('/').next().unwrap_or("patch.patch").to_string()
 }

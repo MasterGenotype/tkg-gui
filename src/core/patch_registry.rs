@@ -132,9 +132,7 @@ pub fn check_update(meta: PatchMeta, tx: Sender<UpdateCheckResult>) {
                 };
 
                 if etag_changed || modified_changed {
-                    let _ = tx.send(UpdateCheckResult::Stale {
-                        key,
-                    });
+                    let _ = tx.send(UpdateCheckResult::Stale { key });
                 } else {
                     let _ = tx.send(UpdateCheckResult::UpToDate { key });
                 }

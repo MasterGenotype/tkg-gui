@@ -170,10 +170,7 @@ impl KernelTab {
                     for info in &filtered {
                         let is_selected = self.selected.as_ref() == Some(&info.version);
                         ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(is_selected, &info.version)
-                                .clicked()
-                            {
+                            if ui.selectable_label(is_selected, &info.version).clicked() {
                                 let version_changed = self.selected.as_ref() != Some(&info.version);
                                 self.selected = Some(info.version.clone());
                                 if version_changed {
@@ -183,9 +180,7 @@ impl KernelTab {
                                 }
                             }
                             if let Some(date) = &info.date {
-                                ui.label(
-                                    RichText::new(date).small().color(egui::Color32::GRAY),
-                                );
+                                ui.label(RichText::new(date).small().color(egui::Color32::GRAY));
                             }
                         });
                     }
@@ -253,9 +248,11 @@ impl KernelTab {
                                     ui.horizontal(|ui| {
                                         if !commit.hash.is_empty() {
                                             ui.label(
-                                                RichText::new(&commit.hash[..commit.hash.len().min(8)])
-                                                    .monospace()
-                                                    .color(egui::Color32::YELLOW),
+                                                RichText::new(
+                                                    &commit.hash[..commit.hash.len().min(8)],
+                                                )
+                                                .monospace()
+                                                .color(egui::Color32::YELLOW),
                                             );
                                         }
                                         ui.label(&commit.subject);
@@ -307,10 +304,17 @@ impl KernelTab {
                 let is_downloading = self.download_rx.is_some();
                 ui.horizontal(|ui| {
                     if ui
-                        .add_enabled(!is_downloading, egui::Button::new("⬇ Download Kernel Sources"))
+                        .add_enabled(
+                            !is_downloading,
+                            egui::Button::new("⬇ Download Kernel Sources"),
+                        )
                         .clicked()
                     {
-                        self.start_download(selected.clone(), ctx.clone(), kernel_sources_dir.to_path_buf());
+                        self.start_download(
+                            selected.clone(),
+                            ctx.clone(),
+                            kernel_sources_dir.to_path_buf(),
+                        );
                     }
                 });
 

@@ -101,8 +101,7 @@ fn download_file(
     let _ = tx.send(DownloadProgress::Started(total_size));
 
     let mut reader = response.into_reader();
-    let mut file = File::create(dest)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+    let mut file = File::create(dest).map_err(|e| format!("Failed to create file: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let mut buffer = [0u8; 8192];
@@ -128,8 +127,7 @@ fn download_file(
 
 /// Extract a .tar.xz tarball
 fn extract_tarball(tarball: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
-    let file = File::open(tarball)
-        .map_err(|e| format!("Failed to open tarball: {}", e))?;
+    let file = File::open(tarball).map_err(|e| format!("Failed to open tarball: {}", e))?;
 
     // Decompress XZ
     let decompressor = xz2::read::XzDecoder::new(file);

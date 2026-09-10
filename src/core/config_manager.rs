@@ -6,7 +6,11 @@ use std::path::Path;
 #[derive(Clone, Debug)]
 pub enum Line {
     Comment(String),
-    Assignment { key: String, value: String, raw: String },
+    Assignment {
+        key: String,
+        value: String,
+        raw: String,
+    },
     Empty,
 }
 

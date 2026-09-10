@@ -51,9 +51,7 @@ impl ConfigTab {
             ui.label(&self.status);
         });
         if !self.fragment_status.is_empty() {
-            ui.label(
-                egui::RichText::new(&self.fragment_status).color(egui::Color32::LIGHT_BLUE),
-            );
+            ui.label(egui::RichText::new(&self.fragment_status).color(egui::Color32::LIGHT_BLUE));
         }
 
         ui.add_space(8.0);

@@ -10,8 +10,8 @@ use std::sync::{Arc, OnceLock};
 pub fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        let connector = native_tls::TlsConnector::new()
-            .expect("Failed to initialise native-tls TLS connector");
+        let connector =
+            native_tls::TlsConnector::new().expect("Failed to initialise native-tls TLS connector");
         ureq::AgentBuilder::new()
             .tls_connector(Arc::new(connector))
             .build()

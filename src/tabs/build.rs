@@ -1,6 +1,7 @@
 use crate::core::build_manager::{self, BuildHandle, BuildMsg};
 use crate::core::config_manager::ConfigManager;
 use crate::core::fragment_manager::{self, FeaturePresets};
+use crate::core::patch_conflicts;
 use egui::{Context, RichText, Ui};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
@@ -54,7 +55,7 @@ impl BuildTab {
         // Drain messages from build process
         let mut should_clear_rx = false;
         let mut got_messages = false;
-        
+
         if let Some(rx) = &self.rx {
             while let Ok(msg) = rx.try_recv() {
                 got_messages = true;
@@ -86,7 +87,7 @@ impl BuildTab {
                 }
             }
         }
-        
+
         if should_clear_rx {
             self.rx = None;
             self.build_handle = None;
@@ -148,7 +149,9 @@ impl BuildTab {
                 BuildState::Running => "Running…",
                 BuildState::Done(0) => "✓ Success",
                 BuildState::Done(code) => {
-                    ui.label(RichText::new(format!("✗ Failed ({})", code)).color(egui::Color32::RED));
+                    ui.label(
+                        RichText::new(format!("✗ Failed ({})", code)).color(egui::Color32::RED),
+                    );
                     return;
                 }
                 BuildState::Failed => {
@@ -202,8 +205,11 @@ impl BuildTab {
             );
 
             let can_send = self.state == BuildState::Running && self.build_handle.is_some();
-            let send_clicked = ui.add_enabled(can_send, egui::Button::new("Send")).clicked();
-            let enter_pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let send_clicked = ui
+                .add_enabled(can_send, egui::Button::new("Send"))
+                .clicked();
+            let enter_pressed =
+                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
             if can_send && (send_clicked || enter_pressed) && !self.input_text.is_empty() {
                 if let Some(handle) = &self.build_handle {
@@ -234,6 +240,62 @@ impl BuildTab {
         }
     }
 
+    /// Log any userpatch that re-declares something a bundled linux-tkg patch
+    /// already adds. Live findings are surfaced as warnings; findings against a
+    /// bundled patch this config does not select are logged as informational, so
+    /// a latent duplicate is visible without crying wolf.
+    fn report_patch_conflicts(
+        &mut self,
+        work_dir: &Path,
+        cfg_values: &std::collections::HashMap<String, String>,
+    ) {
+        let cfg: std::collections::BTreeMap<String, String> = cfg_values
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let Some(series) = patch_conflicts::resolve_series(work_dir, &cfg) else {
+            return; // no bundled patch dir to compare against; nothing to say
+        };
+        let findings = patch_conflicts::group(&patch_conflicts::scan(work_dir, &series, &cfg));
+        if findings.is_empty() {
+            return;
+        }
+
+        let live = findings.iter().filter(|f| f.is_live()).count();
+        if live > 0 {
+            self.log.push(LogLine {
+                text: format!(
+                    "==> WARNING: {} userpatch/patches duplicate a bundled linux-tkg patch. \
+                     These apply cleanly and then break the compile.",
+                    live
+                ),
+                level: LogLevel::Warning,
+            });
+        }
+        for f in &findings {
+            self.log.push(LogLine {
+                text: format!("      {}", f.headline()),
+                level: if f.is_live() {
+                    LogLevel::Warning
+                } else {
+                    LogLevel::Stage
+                },
+            });
+            self.log.push(LogLine {
+                text: format!("        duplicated: {}", f.detail()),
+                level: LogLevel::Stage,
+            });
+        }
+        if live > 0 {
+            self.log.push(LogLine {
+                text: "      Fix: delete the userpatch — linux-tkg already provides it. \
+                       (Patches tab -> Check Conflicts re-runs this scan.)"
+                    .into(),
+                level: LogLevel::Warning,
+            });
+        }
+    }
+
     fn start_build(&mut self, work_dir: &Path, ctx: Context) {
         self.log.clear();
         self.state = BuildState::Running;
@@ -244,22 +306,29 @@ impl BuildTab {
 
         // Detect distro from config to determine build command
         let config_path = work_dir.join("customization.cfg");
-        let (use_makepkg, presets) = if let Ok(mut config) = ConfigManager::load(&config_path) {
-            let mut values = config.get_all_options();
-            let presets = FeaturePresets::from_map(&values);
-            // Ensure silent fragment apply when presets are enabled
-            if presets.xen_dom0 || presets.lvm_thin || presets.acpi_call {
-                presets.apply_to_map(&mut values);
-                for (k, v) in &values {
-                    config.set_option(k, v);
+        let (use_makepkg, presets, cfg_values) =
+            if let Ok(mut config) = ConfigManager::load(&config_path) {
+                let mut values = config.get_all_options();
+                let presets = FeaturePresets::from_map(&values);
+                // Ensure silent fragment apply when presets are enabled
+                if presets.xen_dom0 || presets.lvm_thin || presets.acpi_call {
+                    presets.apply_to_map(&mut values);
+                    for (k, v) in &values {
+                        config.set_option(k, v);
+                    }
+                    let _ = config.save();
                 }
-                let _ = config.save();
-            }
-            let use_makepkg = config.get_option("_distro").unwrap_or_default() == "Arch";
-            (use_makepkg, presets)
-        } else {
-            (false, FeaturePresets::default())
-        };
+                let use_makepkg = config.get_option("_distro").unwrap_or_default() == "Arch";
+                (use_makepkg, presets, values)
+            } else {
+                (false, FeaturePresets::default(), Default::default())
+            };
+
+        // Userpatches that duplicate a bundled patch apply cleanly and then fail
+        // the compile tens of minutes later, so report them before the build
+        // rather than after. Not fatal: a duplicate could be deliberate, and
+        // guessing wrong here would block a legitimate build.
+        self.report_patch_conflicts(work_dir, &cfg_values);
 
         match fragment_manager::sync_fragments(work_dir, &presets) {
             Ok(actions) => {
@@ -285,8 +354,9 @@ impl BuildTab {
                 }
                 if presets.acpi_call {
                     self.log.push(LogLine {
-                        text: "==> acpi_call helper: tkg-gui-acpi-call-install.sh (run after install)"
-                            .into(),
+                        text:
+                            "==> acpi_call helper: tkg-gui-acpi-call-install.sh (run after install)"
+                                .into(),
                         level: LogLevel::Stage,
                     });
                 }
