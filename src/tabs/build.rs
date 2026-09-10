@@ -261,21 +261,35 @@ impl BuildTab {
             return;
         }
 
-        // Opt-in auto-fix: disable the offending userpatches instead of only
-        // warning. Off unless the Patches tab switched it on, because renaming
-        // someone's patches out from under a build they just asked for is not a
-        // default anyone should get by surprise.
-        if patch_conflicts::autofix_enabled(&cfg) {
+        // Opt-in auto-fix. Off unless the Patches tab switched it on, because
+        // touching someone's patches out from under a build they just asked for
+        // is not a default anyone should get by surprise.
+        //
+        // Deletion is deliberately NOT available here: it is irreversible and a
+        // build start has nowhere to ask. A config set to `delete` therefore
+        // disables instead — the conflict is still resolved so the build can
+        // proceed, and the destructive version stays behind the confirm step in
+        // the Patches tab.
+        if let Some(configured) = patch_conflicts::autofix_mode(&cfg) {
             let names = patch_conflicts::offending_user_patches(&findings, true);
             if !names.is_empty() {
+                let mode = patch_conflicts::FixMode::Disable;
+                if configured.is_destructive() {
+                    self.log.push(LogLine {
+                        text: "==> Auto-fix is set to DELETE, which needs confirmation — \
+                               disabling these instead. Use Patches tab -> Auto-fix to delete."
+                            .into(),
+                        level: LogLevel::Warning,
+                    });
+                }
                 self.log.push(LogLine {
                     text: format!(
-                        "==> Auto-fix is on: disabling {} conflicting userpatch(es) before building",
+                        "==> Auto-fix: disabling {} conflicting userpatch(es) before building",
                         names.len()
                     ),
                     level: LogLevel::Warning,
                 });
-                for r in patch_conflicts::disable_user_patches(work_dir, &series, &names) {
+                for r in patch_conflicts::resolve_user_patches(work_dir, &series, &names, mode) {
                     self.log.push(LogLine {
                         text: format!("      {}", r.summary()),
                         level: if r.is_failure() {

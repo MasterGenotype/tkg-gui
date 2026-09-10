@@ -2,6 +2,7 @@ use crate::core::patch_browser::{
     browse_patchsets, describe_patchset, download_patchset, BrowseResult, PatchsetResult,
     RemotePatchset,
 };
+use crate::core::patch_conflicts::FixMode;
 use crate::core::patch_manager::{
     delete_patch, download_patch, extract_filename_from_url, get_patch_dir, list_patches,
     toggle_patch, DownloadInfo, DownloadResult, PatchEntry,
@@ -29,9 +30,12 @@ pub struct PatchesTab {
     // Conflict scan against bundled linux-tkg patches
     conflicts: Vec<crate::core::patch_conflicts::PairReport>,
     conflict_status: String,
-    /// Two-step guard: the fix renames files, so it is never one stray click.
-    confirm_disable: bool,
-    autofix_on_build: bool,
+    /// Two-step guard: the fix touches files, so it is never one stray click.
+    confirm_fix: bool,
+    /// What Auto-fix does. Deleting is irreversible, so it is never the default.
+    fix_mode: crate::core::patch_conflicts::FixMode,
+    /// Whether a build should auto-fix, and with which action.
+    autofix_on_build: Option<crate::core::patch_conflicts::FixMode>,
     /// Tree and series the findings came from, so the fix acts on the same ones.
     last_scan_root: Option<std::path::PathBuf>,
     last_scan_series: Option<String>,
@@ -70,8 +74,9 @@ impl Default for PatchesTab {
             kernel_series: "6.13".to_string(),
             conflicts: Vec::new(),
             conflict_status: String::new(),
-            confirm_disable: false,
-            autofix_on_build: false,
+            confirm_fix: false,
+            fix_mode: crate::core::patch_conflicts::FixMode::Disable,
+            autofix_on_build: None,
             last_scan_root: None,
             last_scan_series: None,
             patches: Vec::new(),
@@ -124,8 +129,8 @@ impl PatchesTab {
         }
 
         self.conflicts = pc::group(&pc::scan(linux_tkg_path, &series, &cfg));
-        self.confirm_disable = false;
-        self.autofix_on_build = pc::autofix_enabled(&cfg);
+        self.confirm_fix = false;
+        self.autofix_on_build = pc::autofix_mode(&cfg);
         self.last_scan_root = Some(linux_tkg_path.to_path_buf());
         self.last_scan_series = Some(series.clone());
         let live = self.conflicts.iter().filter(|f| f.is_live()).count();
@@ -191,42 +196,108 @@ impl PatchesTab {
         );
 
         let names = crate::core::patch_conflicts::offending_user_patches(&self.conflicts, true);
+        let destructive = self.fix_mode.is_destructive();
+
         ui.horizontal(|ui| {
-            if self.confirm_disable {
-                ui.label(
-                    egui::RichText::new(format!("Disable {} patch(es)?", names.len()))
-                        .color(egui::Color32::YELLOW),
+            ui.label("Action:");
+            ui.radio_value(&mut self.fix_mode, FixMode::Disable, "Disable")
+                .on_hover_text(
+                    "Rename to *.mypatch.disabled. linux-tkg stops applying it; re-enable it \
+                     from the list below.",
                 );
+            ui.radio_value(&mut self.fix_mode, FixMode::Delete, "Delete")
+                .on_hover_text(
+                    "Remove the file from the userpatch directory. Not undoable from here — \
+                     only pick this if the patch set is kept elsewhere.",
+                );
+        });
+
+        ui.horizontal(|ui| {
+            if self.confirm_fix {
+                // Spell out exactly what is about to happen. For deletion that
+                // includes the word, the count, and that it cannot be undone.
+                let prompt = if destructive {
+                    format!(
+                        "PERMANENTLY DELETE {} patch file(s)? This cannot be undone from here.",
+                        names.len()
+                    )
+                } else {
+                    format!("Disable {} patch file(s)?", names.len())
+                };
+                ui.label(
+                    egui::RichText::new(prompt)
+                        .color(if destructive {
+                            egui::Color32::from_rgb(255, 90, 80)
+                        } else {
+                            egui::Color32::YELLOW
+                        })
+                        .strong(),
+                );
+                let confirm_label = if destructive {
+                    "🗑 Yes, delete them"
+                } else {
+                    "✔ Yes, disable them"
+                };
                 if ui
-                    .button(egui::RichText::new("✔ Yes, disable").color(egui::Color32::GREEN))
+                    .button(egui::RichText::new(confirm_label).color(egui::Color32::GREEN))
                     .clicked()
                 {
                     self.apply_conflict_fix(&names);
                 }
                 if ui.button("✖ Cancel").clicked() {
-                    self.confirm_disable = false;
+                    self.confirm_fix = false;
                 }
-            } else if ui
-                .button(format!("🛠 Auto-fix ({})", names.len()))
-                .on_hover_text(
-                    "Rename each conflicting userpatch to *.mypatch.disabled so linux-tkg stops \
-                     picking it up. Nothing is deleted — re-enable it from the list below, or \
-                     rename it back by hand.",
-                )
-                .clicked()
-            {
-                self.confirm_disable = true;
+            } else {
+                let label = if destructive {
+                    format!("🗑 Delete {} conflicting patch(es)", names.len())
+                } else {
+                    format!("🛠 Disable {} conflicting patch(es)", names.len())
+                };
+                if ui
+                    .button(label)
+                    .on_hover_text("Asks for confirmation first.")
+                    .clicked()
+                {
+                    self.confirm_fix = true;
+                }
             }
+        });
 
+        // The files about to go, named, so they can be matched against a backup.
+        if self.confirm_fix {
+            for n in &names {
+                ui.label(
+                    egui::RichText::new(format!("      {n}"))
+                        .small()
+                        .monospace(),
+                );
+            }
+        }
+
+        ui.horizontal(|ui| {
+            let mut on = self.autofix_on_build.is_some();
             if ui
-                .checkbox(&mut self.autofix_on_build, "Auto-fix at build start")
+                .checkbox(&mut on, "Auto-fix at build start")
                 .on_hover_text(
-                    "Saved to customization.cfg. When on, starting a build disables conflicting \
-                     userpatches itself instead of only warning.",
+                    "Saved to customization.cfg. A build then resolves conflicts itself instead \
+                     of only warning. Builds only ever DISABLE — deleting needs the confirmation \
+                     above, and a build start has nowhere to ask.",
                 )
                 .changed()
             {
+                self.autofix_on_build = on.then_some(self.fix_mode);
                 self.persist_autofix();
+            }
+            if let Some(m) = self.autofix_on_build {
+                ui.label(
+                    egui::RichText::new(if m.is_destructive() {
+                        "(builds will disable, not delete)"
+                    } else {
+                        "(builds will disable)"
+                    })
+                    .small()
+                    .weak(),
+                );
             }
         });
     }
@@ -243,10 +314,9 @@ impl PatchesTab {
             Ok(mut c) => {
                 c.set_option(
                     AUTOFIX_KEY,
-                    if self.autofix_on_build {
-                        "true"
-                    } else {
-                        "false"
+                    match self.autofix_on_build {
+                        Some(m) => m.as_cfg(),
+                        None => "off",
                     },
                 );
                 if let Err(e) = c.save() {
@@ -262,7 +332,7 @@ impl PatchesTab {
     fn apply_conflict_fix(&mut self, names: &[String]) {
         use crate::core::patch_conflicts as pc;
 
-        self.confirm_disable = false;
+        self.confirm_fix = false;
         let (Some(root), Some(series)) =
             (self.last_scan_root.clone(), self.last_scan_series.clone())
         else {
@@ -270,10 +340,10 @@ impl PatchesTab {
             return;
         };
 
-        let results = pc::disable_user_patches(&root, &series, names);
+        let results = pc::resolve_user_patches(&root, &series, names, self.fix_mode);
         let done = results
             .iter()
-            .filter(|r| r.disabled_name().is_some())
+            .filter(|r| r.resolved_name().is_some())
             .count();
         let problems: Vec<String> = results
             .iter()
@@ -285,10 +355,15 @@ impl PatchesTab {
         self.check_conflicts(&root);
         self.refresh_patches(&root);
 
-        self.conflict_status = if problems.is_empty() {
-            format!("Disabled {done}. {}", self.conflict_status)
+        let verb = if self.fix_mode.is_destructive() {
+            "Deleted"
         } else {
-            format!("Disabled {done}, but: {}", problems.join("; "))
+            "Disabled"
+        };
+        self.conflict_status = if problems.is_empty() {
+            format!("{verb} {done}. {}", self.conflict_status)
+        } else {
+            format!("{verb} {done}, but: {}", problems.join("; "))
         }
     }
 

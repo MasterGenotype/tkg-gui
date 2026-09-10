@@ -166,32 +166,44 @@ is always the userpatch — and dropping it is the fix.
 
 ### Auto-fix
 
-`disable_user_patches()` renames each offending userpatch to `*.mypatch.disabled`,
-which linux-tkg's `*.mypatch` glob no longer matches and `scan` skips. Renaming,
-not deleting: it is the same mechanism as the per-patch toggle, it is undoable,
-and a curated patch set is not ours to destroy.
+`resolve_user_patches(..., mode)` applies one of two actions to the offending
+userpatches:
 
-Rails, all covered by tests:
+| `FixMode` | Action | Reversible |
+|-----------|--------|------------|
+| `Disable` | rename to `*.mypatch.disabled` (linux-tkg's `*.mypatch` glob stops matching; `scan` skips it) | yes — re-enable from the patch list |
+| `Delete`  | `remove_file` | no, not from here |
+
+Both share the same rails, each covered by tests:
 - only the **userpatch** side is ever touched, never the bundled patch;
 - only **live** findings by default — a latent collision is not acted on;
-- an existing `*.disabled` is never overwritten;
-- names containing `/`, `\` or `..` are refused rather than followed;
-- a re-scan runs straight after, so the UI shows what is on disk, not what was.
+- names containing `/`, `\` or `..` are refused rather than followed, so a
+  crafted finding cannot reach outside the userpatch directory (tested for
+  `Delete` specifically);
+- `Disable` never overwrites an existing `*.disabled`;
+- a missing file is skipped, not an error;
+- a re-scan runs straight afterwards, so the UI shows what is on disk.
 
-Two entry points:
-- **Patches tab → Auto-fix** — two-click (button, then confirm), since it
-  renames files.
-- **`_tkg_gui_autofix_conflicts="true"`** in `customization.cfg`, set by the
-  *Auto-fix at build start* checkbox. When on, a build disables conflicting
-  userpatches itself and logs each rename. **Off by default** — renaming
-  someone's patches out from under a build they just asked for should never be a
-  surprise.
+**Confirmation is mandatory.** The Patches tab picks the action with a radio pair
+and then requires a second click; for `Delete` the prompt names the count, says
+"PERMANENTLY DELETE", states that it cannot be undone, and lists every filename
+so it can be matched against wherever the set is kept. `Delete` is never the
+default.
 
-To validate against a live tree:
+`_tkg_gui_autofix_conflicts` takes `off` / `disable` / `delete`, set by the
+*Auto-fix at build start* checkbox. Two rules:
+- a legacy `true`/`yes`/`1` reads as `disable`, so a config written before
+  `delete` existed never starts deleting files;
+- **a build never deletes.** A build start has nowhere to ask, so a config set to
+  `delete` disables instead and logs the substitution. The conflict is still
+  resolved so the build proceeds; deletion stays behind the confirm step.
+
+To validate against a live tree (`fix_a_real_tree` mutates it — use a copy, and
+its action comes from that tree's own `_tkg_gui_autofix_conflicts`):
 
 ```bash
-TKG_GUI_CONFLICT_TREE=/path/to/linux-tkg \
-  cargo test scan_a_real_tree -- --ignored --nocapture
+TKG_GUI_CONFLICT_TREE=/path/to/copy \
+  cargo test fix_a_real_tree -- --ignored --nocapture
 ```
 
 ## Config Options Reference

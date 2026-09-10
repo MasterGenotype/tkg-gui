@@ -319,20 +319,50 @@ pub fn group(collisions: &[Collision]) -> Vec<PairReport> {
     out
 }
 
-/// `customization.cfg` key: disable conflicting userpatches at build start.
+/// `customization.cfg` key selecting what an auto-fix does.
 ///
 /// GUI-only, ignored by linux-tkg itself, following the `_tkg_gui_*` convention
-/// already used by the feature presets.
+/// already used by the feature presets. Values: `off`, `disable`, `delete`.
+/// A legacy `true`/`yes`/`1` reads as `disable` — the behaviour that key already
+/// shipped with — so an existing config is never silently promoted to deleting
+/// files.
 pub const AUTOFIX_KEY: &str = "_tkg_gui_autofix_conflicts";
+
+/// What an auto-fix should do to an offending userpatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixMode {
+    /// Rename to `*.disabled`. Reversible; linux-tkg stops applying it.
+    Disable,
+    /// Delete the file outright. Not reversible from here — for a patch set that
+    /// is kept under version control or backed up elsewhere.
+    Delete,
+}
+
+impl FixMode {
+    /// The value written to [`AUTOFIX_KEY`].
+    pub fn as_cfg(self) -> &'static str {
+        match self {
+            FixMode::Disable => "disable",
+            FixMode::Delete => "delete",
+        }
+    }
+
+    /// Whether applying this mode destroys data.
+    pub fn is_destructive(self) -> bool {
+        self == FixMode::Delete
+    }
+}
 
 /// What happened to one offending userpatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
     /// Renamed to `*.disabled`; linux-tkg's `*.mypatch` glob no longer matches.
     Disabled { name: String, to: String },
+    /// Removed from the userpatch directory.
+    Deleted { name: String },
     /// Left alone, with the reason.
     Skipped { name: String, why: String },
-    /// The rename failed.
+    /// The rename or removal failed.
     Failed { name: String, why: String },
 }
 
@@ -340,8 +370,9 @@ impl Resolution {
     pub fn summary(&self) -> String {
         match self {
             Resolution::Disabled { name, to } => format!("disabled {name} -> {to}"),
+            Resolution::Deleted { name } => format!("deleted {name}"),
             Resolution::Skipped { name, why } => format!("skipped {name}: {why}"),
-            Resolution::Failed { name, why } => format!("FAILED to disable {name}: {why}"),
+            Resolution::Failed { name, why } => format!("FAILED on {name}: {why}"),
         }
     }
 
@@ -349,9 +380,10 @@ impl Resolution {
         matches!(self, Resolution::Failed { .. })
     }
 
-    pub fn disabled_name(&self) -> Option<&str> {
+    /// The patch this resolution actually acted on, disabled or deleted.
+    pub fn resolved_name(&self) -> Option<&str> {
         match self {
-            Resolution::Disabled { name, .. } => Some(name.as_str()),
+            Resolution::Disabled { name, .. } | Resolution::Deleted { name } => Some(name.as_str()),
             _ => None,
         }
     }
@@ -378,19 +410,27 @@ pub fn offending_user_patches(findings: &[PairReport], live_only: bool) -> Vec<S
     out
 }
 
-/// Disable the named userpatches by renaming each to `<name>.disabled`.
+/// Apply `mode` to the named userpatches.
 ///
-/// Renaming rather than deleting, deliberately: it is the same mechanism the
-/// Patches tab's per-patch toggle already uses, it is trivially undoable, and a
-/// patch set someone curated is not ours to destroy. [`scan`] skips
-/// `*.disabled`, so a re-scan afterwards comes back clean.
+/// [`FixMode::Disable`] renames each to `<name>.disabled` — the same mechanism
+/// the Patches tab's per-patch toggle uses, and undoable from that list.
+/// [`FixMode::Delete`] removes the file. [`scan`] skips `*.disabled`, so a
+/// re-scan after either comes back clean.
 ///
-/// Each name is resolved strictly inside the userpatch directory; anything
-/// carrying a path separator or `..` is refused rather than followed.
-pub fn disable_user_patches(
+/// Both modes share the same rails. Each name must be a plain filename resolved
+/// strictly inside the userpatch directory: anything carrying a path separator
+/// or `..` is refused rather than followed, so a crafted finding can never reach
+/// outside that directory. A name that is no longer present is skipped, not an
+/// error.
+///
+/// Deleting is irreversible from here, so every removal is reported by name —
+/// that list is what makes a patch recoverable from wherever the set is kept.
+/// Callers must confirm with the user before passing [`FixMode::Delete`].
+pub fn resolve_user_patches(
     linux_tkg_path: &Path,
     kernel_series: &str,
     names: &[String],
+    mode: FixMode,
 ) -> Vec<Resolution> {
     let dir = crate::core::patch_manager::get_patch_dir(linux_tkg_path, kernel_series);
     let mut out = Vec::new();
@@ -410,37 +450,57 @@ pub fn disable_user_patches(
             });
             continue;
         }
-        let to_name = format!("{name}.disabled");
-        let to = dir.join(&to_name);
-        if to.exists() {
-            out.push(Resolution::Skipped {
-                name: name.clone(),
-                why: format!("{to_name} already exists"),
-            });
-            continue;
-        }
-        match std::fs::rename(&from, &to) {
-            Ok(()) => out.push(Resolution::Disabled {
-                name: name.clone(),
-                to: to_name,
-            }),
-            Err(e) => out.push(Resolution::Failed {
-                name: name.clone(),
-                why: e.to_string(),
-            }),
+
+        match mode {
+            FixMode::Delete => match std::fs::remove_file(&from) {
+                Ok(()) => out.push(Resolution::Deleted { name: name.clone() }),
+                Err(e) => out.push(Resolution::Failed {
+                    name: name.clone(),
+                    why: e.to_string(),
+                }),
+            },
+            FixMode::Disable => {
+                let to_name = format!("{name}.disabled");
+                let to = dir.join(&to_name);
+                if to.exists() {
+                    out.push(Resolution::Skipped {
+                        name: name.clone(),
+                        why: format!("{to_name} already exists"),
+                    });
+                    continue;
+                }
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => out.push(Resolution::Disabled {
+                        name: name.clone(),
+                        to: to_name,
+                    }),
+                    Err(e) => out.push(Resolution::Failed {
+                        name: name.clone(),
+                        why: e.to_string(),
+                    }),
+                }
+            }
         }
     }
     out
 }
 
-/// Whether the auto-disable option is switched on in `customization.cfg`.
-pub fn autofix_enabled(cfg: &BTreeMap<String, String>) -> bool {
-    matches!(
-        cfg.get(AUTOFIX_KEY)
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("true") | Some("1") | Some("yes")
-    )
+/// The auto-fix action configured in `customization.cfg`, if any.
+///
+/// `None` means auto-fix is off, which is the default and what an absent or
+/// unrecognised value reads as. A legacy `true`/`yes`/`1` maps to
+/// [`FixMode::Disable`]: that is what the key meant when it shipped, and a
+/// config written before `delete` existed must not start deleting files.
+pub fn autofix_mode(cfg: &BTreeMap<String, String>) -> Option<FixMode> {
+    match cfg
+        .get(AUTOFIX_KEY)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("delete") => Some(FixMode::Delete),
+        Some("disable") | Some("true") | Some("yes") | Some("1") => Some(FixMode::Disable),
+        _ => None,
+    }
 }
 
 /// Directory holding the bundled patches for `kernel_series` (dotted, "7.2").
@@ -872,7 +932,11 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
         );
         assert!(!names.is_empty(), "nothing to fix in this tree");
 
-        for r in disable_user_patches(&root, &series, &names) {
+        // Mode comes from the tree's own config, so pointing this at a copy with
+        // _tkg_gui_autofix_conflicts="delete" exercises the destructive path.
+        let mode = autofix_mode(&cfgmap).unwrap_or(FixMode::Disable);
+        println!("applying {mode:?}");
+        for r in resolve_user_patches(&root, &series, &names, mode) {
             println!("  {}", r.summary());
             assert!(!r.is_failure(), "{r:?}");
         }
@@ -987,11 +1051,11 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
 
         let g = group(&scan(&t.0, "7.2", &c));
         let names = offending_user_patches(&g, true);
-        let res = disable_user_patches(&t.0, "7.2", &names);
+        let res = resolve_user_patches(&t.0, "7.2", &names, FixMode::Disable);
 
         assert_eq!(res.len(), 1);
         assert!(!res[0].is_failure(), "{res:?}");
-        assert_eq!(res[0].disabled_name(), Some("arch-userns.mypatch"));
+        assert_eq!(res[0].resolved_name(), Some("arch-userns.mypatch"));
         assert!(
             !up.join("arch-userns.mypatch").exists(),
             "original must be gone"
@@ -1015,7 +1079,7 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
         std::fs::write(up.join("dup.mypatch"), ARCH_USERNS).unwrap();
         std::fs::write(up.join("dup.mypatch.disabled"), "PRECIOUS").unwrap();
 
-        let res = disable_user_patches(&t.0, "7.2", &["dup.mypatch".to_string()]);
+        let res = resolve_user_patches(&t.0, "7.2", &["dup.mypatch".to_string()], FixMode::Disable);
         assert!(matches!(res[0], Resolution::Skipped { .. }), "{res:?}");
         assert_eq!(
             std::fs::read_to_string(up.join("dup.mypatch.disabled")).unwrap(),
@@ -1028,7 +1092,7 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
     fn path_traversal_in_a_name_is_refused() {
         let t = tree("traversal");
         for bad in ["../customization.cfg", "a/b.mypatch", ""] {
-            let res = disable_user_patches(&t.0, "7.2", &[bad.to_string()]);
+            let res = resolve_user_patches(&t.0, "7.2", &[bad.to_string()], FixMode::Delete);
             assert!(
                 matches!(res[0], Resolution::Skipped { .. }),
                 "{bad:?} should be refused, got {res:?}"
@@ -1043,17 +1107,95 @@ diff --git a/kernel/user_namespace.c b/kernel/user_namespace.c
     #[test]
     fn a_missing_file_is_skipped_not_an_error() {
         let t = tree("missing");
-        let res = disable_user_patches(&t.0, "7.2", &["not-there.mypatch".to_string()]);
+        let res = resolve_user_patches(
+            &t.0,
+            "7.2",
+            &["not-there.mypatch".to_string()],
+            FixMode::Delete,
+        );
         assert!(matches!(res[0], Resolution::Skipped { .. }), "{res:?}");
         assert!(!res[0].is_failure());
     }
 
     #[test]
-    fn autofix_is_off_unless_explicitly_enabled() {
-        assert!(!autofix_enabled(&cfg(&[])));
-        assert!(!autofix_enabled(&cfg(&[(AUTOFIX_KEY, "false")])));
-        assert!(autofix_enabled(&cfg(&[(AUTOFIX_KEY, "true")])));
-        assert!(autofix_enabled(&cfg(&[(AUTOFIX_KEY, "yes")])));
+    fn autofix_is_off_unless_explicitly_configured() {
+        assert_eq!(autofix_mode(&cfg(&[])), None);
+        assert_eq!(autofix_mode(&cfg(&[(AUTOFIX_KEY, "off")])), None);
+        assert_eq!(autofix_mode(&cfg(&[(AUTOFIX_KEY, "false")])), None);
+        assert_eq!(autofix_mode(&cfg(&[(AUTOFIX_KEY, "nonsense")])), None);
+    }
+
+    /// A config written before `delete` existed said `true` and meant "disable".
+    /// It must keep meaning that — an upgrade that silently starts deleting the
+    /// user's files would be indefensible.
+    #[test]
+    fn a_legacy_true_still_means_disable_never_delete() {
+        for legacy in ["true", "yes", "1"] {
+            assert_eq!(
+                autofix_mode(&cfg(&[(AUTOFIX_KEY, legacy)])),
+                Some(FixMode::Disable),
+                "{legacy:?} must not escalate to deletion"
+            );
+        }
+        assert_eq!(
+            autofix_mode(&cfg(&[(AUTOFIX_KEY, "disable")])),
+            Some(FixMode::Disable)
+        );
+        assert_eq!(
+            autofix_mode(&cfg(&[(AUTOFIX_KEY, "delete")])),
+            Some(FixMode::Delete)
+        );
+    }
+
+    #[test]
+    fn deleting_removes_the_file_and_clears_the_finding() {
+        let t = tree("delete");
+        let up = t.0.join("linux72-tkg-userpatches");
+        std::fs::write(up.join("arch-userns.mypatch"), ARCH_USERNS).unwrap();
+        let c = cfg(&[("_cpusched", "bore")]);
+
+        let names = offending_user_patches(&group(&scan(&t.0, "7.2", &c)), true);
+        let res = resolve_user_patches(&t.0, "7.2", &names, FixMode::Delete);
+
+        assert_eq!(res.len(), 1);
+        assert!(matches!(res[0], Resolution::Deleted { .. }), "{res:?}");
+        assert!(
+            !up.join("arch-userns.mypatch").exists(),
+            "file must be gone"
+        );
+        assert!(
+            !up.join("arch-userns.mypatch.disabled").exists(),
+            "delete must not leave a renamed copy behind"
+        );
+        assert!(scan(&t.0, "7.2", &c).is_empty());
+    }
+
+    /// Deletion must still only ever touch the userpatch directory.
+    #[test]
+    fn delete_mode_refuses_to_leave_the_patch_directory() {
+        let t = tree("delete-traversal");
+        let victim = t.0.join("customization.cfg");
+        std::fs::write(&victim, "_cpusched=\"bore\"\n").unwrap();
+
+        let res = resolve_user_patches(
+            &t.0,
+            "7.2",
+            &["../customization.cfg".to_string()],
+            FixMode::Delete,
+        );
+        assert!(matches!(res[0], Resolution::Skipped { .. }), "{res:?}");
+        assert!(
+            victim.is_file(),
+            "must not have deleted outside the patch dir"
+        );
+    }
+
+    #[test]
+    fn fix_mode_reports_whether_it_destroys_data() {
+        assert!(!FixMode::Disable.is_destructive());
+        assert!(FixMode::Delete.is_destructive());
+        assert_eq!(FixMode::Delete.as_cfg(), "delete");
+        assert_eq!(FixMode::Disable.as_cfg(), "disable");
     }
 
     #[test]
