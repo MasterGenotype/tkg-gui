@@ -135,6 +135,41 @@ GUI-only keys stored in `customization.cfg` (ignored by linux-tkg itself):
 
 Note: `_runqueue_sharing` is the correct linux-tkg key (not `_rqshare`).
 
+## Config export
+
+`src/core/config_export.rs`, wired to **Config tab → 📤 Export Config**, copies
+into `<export dir>/tkg-config-<UTC timestamp>/`:
+
+- `customization.cfg` — the inputs;
+- every active `*.myfrag` — part of how the resolved config came about;
+- `kernel.config` — the **resolved** kernel `.config`;
+- `MANIFEST.txt` — source path of each file plus `_version`, `_cpusched`,
+  `_compiler`, `_compileroptlevel`, `_processor_opt`, `_configfile`.
+
+This exists because the kernel tree is unpacked inside `WorkDir`, a temp
+directory deleted on exit — so without an export the `.config` that built a
+working kernel is thrown away.
+
+`find_kernel_config()` searches `<linux-tkg>/src/*`, `<linux-tkg>/*`,
+`_kernel_work_folder`/`_kernel_source_folder` (tilde expanded, plus their
+parents) and `~/.cache/linux-tkg`, accepting a directory only if it has
+`Makefile` **and** `Kconfig` next to the `.config` — a bare `.config` proves
+nothing. When several trees coexist, `pick_newest()` takes the most recently
+modified; that choice is a pure function so it is tested without fighting mtime
+granularity.
+
+Unsaved GUI edits are saved before exporting, since a `customization.cfg` that
+disagreed with what is on screen would be worse than useless. A missing resolved
+`.config` is not an error — the inputs are still captured and both the status
+line and the manifest say it was absent. The timestamped subdirectory means an
+export never overwrites an earlier one. Default destination is
+`~/.local/share/tkg-gui/exports`, editable in the tab.
+
+```bash
+TKG_GUI_EXPORT_FROM=/path/to/linux-tkg TKG_GUI_EXPORT_TO=/tmp/out \
+  cargo test export_a_real_tree -- --ignored --nocapture
+```
+
 ## Userpatch conflict detection
 
 `src/core/patch_conflicts.rs` compares enabled `*.mypatch` files in

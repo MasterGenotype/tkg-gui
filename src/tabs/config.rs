@@ -12,6 +12,10 @@ pub struct ConfigTab {
     status: String,
     config_path: Option<std::path::PathBuf>,
     fragment_status: String,
+    /// Where "Export Config" writes. Empty until first shown, then defaults to
+    /// the app data dir so the export outlives the temporary work directory.
+    export_dir: String,
+    export_status: String,
 }
 
 impl ConfigTab {
@@ -45,11 +49,43 @@ impl ConfigTab {
             {
                 self.sync_feature_fragments(linux_tkg_path);
             }
+            if ui
+                .button("📤 Export Config")
+                .on_hover_text(
+                    "Copy customization.cfg, the active .myfrag files and the resolved kernel \
+                     .config into a timestamped directory. The kernel tree lives in a temp dir \
+                     that is wiped on exit, so this is how a working config is kept.",
+                )
+                .clicked()
+            {
+                self.export_config(linux_tkg_path);
+            }
             if self.dirty {
                 ui.label(egui::RichText::new("● Modified").color(egui::Color32::YELLOW));
             }
             ui.label(&self.status);
         });
+        ui.horizontal(|ui| {
+            if self.export_dir.is_empty() {
+                self.export_dir = crate::core::config_export::default_export_dir()
+                    .display()
+                    .to_string();
+            }
+            ui.label("Export to:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.export_dir)
+                    .desired_width(360.0)
+                    .hint_text("directory for exported configs"),
+            );
+        });
+        if !self.export_status.is_empty() {
+            let colour = if self.export_status.starts_with("Exported") {
+                egui::Color32::LIGHT_GREEN
+            } else {
+                egui::Color32::YELLOW
+            };
+            ui.label(egui::RichText::new(&self.export_status).color(colour));
+        }
         if !self.fragment_status.is_empty() {
             ui.label(egui::RichText::new(&self.fragment_status).color(egui::Color32::LIGHT_BLUE));
         }
@@ -486,6 +522,28 @@ impl ConfigTab {
                 self.status = format!("Error: {}", e);
             }
         }
+    }
+
+    /// Copy the config inputs and the resolved kernel `.config` into a
+    /// timestamped directory under the chosen export path.
+    ///
+    /// Saves first when there are unsaved edits: exporting a `customization.cfg`
+    /// that does not match what the GUI is showing would be worse than useless.
+    fn export_config(&mut self, linux_tkg_path: &Path) {
+        if self.dirty {
+            let config_path = linux_tkg_path.join("customization.cfg");
+            self.save_config(&config_path, linux_tkg_path);
+        }
+        let dest = std::path::PathBuf::from(self.export_dir.trim());
+        if dest.as_os_str().is_empty() {
+            self.export_status = "Set an export directory first.".into();
+            return;
+        }
+        self.export_status =
+            match crate::core::config_export::export(linux_tkg_path, &dest, &self.values) {
+                Ok(r) => r.summary(),
+                Err(e) => format!("Export failed: {e}"),
+            };
     }
 
     pub fn sync_feature_fragments(&mut self, linux_tkg_path: &Path) {
