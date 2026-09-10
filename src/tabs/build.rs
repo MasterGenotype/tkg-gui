@@ -35,6 +35,9 @@ pub struct BuildTab {
     build_handle: Option<BuildHandle>,
     auto_scroll: bool,
     input_text: String,
+    /// Set when Stop was pressed, so the resulting signal death is reported as a
+    /// deliberate stop rather than a build failure.
+    stop_requested: bool,
 }
 
 impl Default for BuildTab {
@@ -46,6 +49,7 @@ impl Default for BuildTab {
             build_handle: None,
             auto_scroll: true,
             input_text: String::new(),
+            stop_requested: false,
         }
     }
 }
@@ -70,6 +74,27 @@ impl BuildTab {
                             text: format!("==> Build finished with exit code {}", code),
                             level: if code == 0 {
                                 LogLevel::Stage
+                            } else {
+                                LogLevel::Error
+                            },
+                        });
+                        should_clear_rx = true;
+                    }
+                    BuildMsg::Signalled(sig) => {
+                        let stopped = self.stop_requested;
+                        self.state = if stopped {
+                            BuildState::Idle
+                        } else {
+                            BuildState::Failed
+                        };
+                        self.log.push(LogLine {
+                            text: if stopped {
+                                format!("==> Build stopped (signal {})", sig)
+                            } else {
+                                format!("==> Build killed by signal {}", sig)
+                            },
+                            level: if stopped {
+                                LogLevel::Warning
                             } else {
                                 LogLevel::Error
                             },
@@ -114,22 +139,19 @@ impl BuildTab {
                 self.start_build(&work_dir, ctx.clone());
             }
 
-            // Stop button - note: we can't easily kill the process, just stop listening
             if ui
                 .add_enabled(
                     is_running,
                     egui::Button::new(RichText::new("■ Stop").color(egui::Color32::RED)),
                 )
-                .on_hover_text("Stop monitoring (process continues in background)")
+                .on_hover_text(
+                    "Terminate the build: SIGTERM to the whole process group (make and \
+                     every compiler it spawned), then SIGKILL after 5s. Anything already \
+                     running under sudo may survive if tkg-gui is not root.",
+                )
                 .clicked()
             {
-                self.rx = None;
-                self.build_handle = None;
-                self.state = BuildState::Idle;
-                self.log.push(LogLine {
-                    text: "==> Stopped monitoring".to_string(),
-                    level: LogLevel::Warning,
-                });
+                self.stop_build();
             }
 
             ui.label(format!("Working dir: {}", work_dir.display()));
@@ -346,8 +368,32 @@ impl BuildTab {
         }
     }
 
+    /// Terminate the running build.
+    ///
+    /// Keeps the receiver attached deliberately: the child still has to be reaped
+    /// and its exit reported, and dropping the channel here is exactly the bug
+    /// that let builds carry on in the background after Stop.
+    fn stop_build(&mut self) {
+        let Some(handle) = &self.build_handle else {
+            self.state = BuildState::Idle;
+            return;
+        };
+        self.stop_requested = true;
+        match handle.terminate() {
+            Ok(()) => self.log.push(LogLine {
+                text: "==> Stopping build (SIGTERM to the process group; SIGKILL in 5s)…".into(),
+                level: LogLevel::Warning,
+            }),
+            Err(e) => self.log.push(LogLine {
+                text: format!("Could not stop the build: {e}"),
+                level: LogLevel::Error,
+            }),
+        }
+    }
+
     fn start_build(&mut self, work_dir: &Path, ctx: Context) {
         self.log.clear();
+        self.stop_requested = false;
         self.state = BuildState::Running;
         self.log.push(LogLine {
             text: format!("==> Starting build in {}", work_dir.display()),

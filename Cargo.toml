@@ -21,3 +21,6 @@ serde_json = "1"
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 tar = "0.4"
+# Already in the tree transitively; promoted to a direct dependency for
+# killpg(), which is how the Stop button reaches the whole build process group.
+libc = "0.2"
